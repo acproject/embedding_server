@@ -1,0 +1,17 @@
+version: '3'
+
+services:
+  embedding-server:
+    build: .
+    container_name: embedding-server
+    restart: always
+    ports:
+      - "8086:8086"
+    volumes:
+      # 挂载模型目录，这样模型只需下载一次
+      - ./models:/app/models
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8086
+      - LOG_LEVEL=info
+      - HF_ENDPOINT=https://hf-mirror.com

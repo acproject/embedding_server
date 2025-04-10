@@ -1,0 +1,11 @@
+fastapi==0.104.1
+uvicorn==0.23.2
+sentence-transformers==2.2.2
+pydantic==2.4.2
+torch>=2.0.0
+transformers>=4.30.0
+huggingface-hub==0.16.4
+psycopg2-binary==2.9.9
+python-dotenv==1.0.0
+loguru==0.7.2
+gunicorn==21.2.0
