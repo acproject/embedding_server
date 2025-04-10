@@ -48,7 +48,7 @@ class EmbeddingResponse(BaseModel):
 async def startup_event():
     try:
         # 修改为使用本地模型路径
-        model_name = "/Users/acproject/workspace/python_projects/embedding_server/models/LaBSE"
+        model_name = "models/LaBSE"
         logger.info(f"正在加载模型: {model_name}")
         global embedding_service
         embedding_service = EmbeddingService(model_name)

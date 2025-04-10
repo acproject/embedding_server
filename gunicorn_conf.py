@@ -2,9 +2,9 @@ import multiprocessing
 import os
 
 # 工作进程数，通常设置为CPU核心数的2-4倍
-workers = int(os.getenv("WORKERS", multiprocessing.cpu_count() * 2))
+workers = int(os.getenv("WORKERS", multiprocessing.cpu_count() * 1))
 # 每个工作进程的线程数
-threads = int(os.getenv("THREADS", 2))
+threads = int(os.getenv("THREADS", 1))
 # 绑定的IP和端口
 bind = f"{os.getenv('HOST', '0.0.0.0')}:{os.getenv('PORT', '8086')}"
 # 工作模式
