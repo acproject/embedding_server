@@ -57,3 +57,4 @@ htmlcov/
 .coverage.*
 coverage.xml
 *.cover
+examples/2412.01506v1.pdf

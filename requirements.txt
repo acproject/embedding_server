@@ -9,3 +9,16 @@ psycopg2-binary==2.9.9
 python-dotenv==1.0.0
 loguru==0.7.2
 gunicorn==21.2.0
+pdfplumber==0.11.6
+layoutparser==0.3.4
+paddleocr==2.10.0
+paddlepaddle==2.6.2
+open-clip-torch==2.32.0
+pillow>=11.0.0
+python-multipart==0.0.20
+opencv-python>=4.5.0
+detectron2==0.6
+numpy>=1.20.0
+scipy>=1.7.0
+matplotlib>=3.5.0
+pytesseract>=0.3.8
