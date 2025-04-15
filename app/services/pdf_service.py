@@ -147,7 +147,7 @@ class PDFService:
     
     def convert_pdf_to_markdown(self, pdf_content: bytes) -> str:
         """
-        将PDF文档转换为Markdown格式
+        将PDF文档转换为Markdown格式，支持流式内容拼接和图片base64编码
         
         Args:
             pdf_content: PDF文档的二进制内容
@@ -156,50 +156,59 @@ class PDFService:
             str: 转换后的Markdown文本
         """
         try:
-            # 确保传入的是bytes类型
             if not isinstance(pdf_content, bytes):
                 raise ValueError("pdf_content必须是bytes类型")
                 
-            # 创建一个临时的PDF文件对象
             pdf_file = io.BytesIO(pdf_content)
             
-            # 使用pdfplumber打开PDF
+            # 初始化markdown文本
+            markdown_text = ""  # 确保在try块内重新初始化
+            
             with pdfplumber.open(pdf_file) as pdf:
-                markdown_content = []
-                
-                # 处理每一页
                 for page_num, page in enumerate(pdf.pages):
-                    logger.info(f"处理第 {page_num + 1} 页")
+                    logger.info(f"开始处理第 {page_num + 1} 页")
+                    page_content = ""  # 每页单独的内容容器
+                    
+                    # 如果没有布局模型，直接提取文本
+                    if not self.layout_model:
+                        text = page.extract_text()
+                        if text and text.strip():
+                            if page_num > 0:
+                                markdown_text += "---\n\n"
+                            markdown_text += f"{text}\n\n"
+                        continue
+                    
+                    # 添加页面分隔符
+                    if page_num > 0:
+                        markdown_text += "---\n\n"
                     
                     # 提取页面图像
                     img = page.to_image(resolution=300).original
                     img_np = np.array(img)
                     
                     # 使用布局分析模型分析页面结构
-                    if self.layout_model:
-                        # 使用YOLOv5进行布局检测
-                        results = self.layout_model(img_np)
-                        layout = []
-                        for result in results:
-                            for box in result.boxes:
-                                layout.append({
-                                    "type": result.names[int(box.cls)],
-                                    "coordinates": [int(x) for x in box.xyxy[0].tolist()],
-                                    "confidence": float(box.conf)
-                                })
-                    else:
-                        # 如果没有布局模型，将整个页面作为文本区域
-                        layout = [{
-                            "type": "Text",
-                            "coordinates": [0, 0, img_np.shape[1], img_np.shape[0]],
-                            "confidence": 1.0
-                        }]
+                    results = self.layout_model(img_np)
+                    layout = []
+                    for result in results:
+                        for box in result.boxes:
+                            layout.append({
+                                "type": result.names[int(box.cls)],
+                                "coordinates": [int(x) for x in box.xyxy[0].tolist()],
+                                "confidence": float(box.conf)
+                            })
                     
                     # 检测公式（如果有公式检测模型）
                     formula_blocks = self._detect_formulas(img_np) if self.formula_det_model else []
                     
                     # 合并布局元素和公式元素
                     all_blocks = layout + formula_blocks
+                    
+                    # 如果没有检测到任何块，将整个页面作为文本处理
+                    if not all_blocks:
+                        text = self._extract_text_from_image(img_np)
+                        if text and text.strip():
+                            markdown_text += f"{text}\n\n"
+                        continue
                     
                     # 按照从上到下的顺序排序布局元素
                     sorted_blocks = sorted(all_blocks, key=lambda x: x["coordinates"][1])
@@ -214,29 +223,33 @@ class PDFService:
                         if block_type == "Text":
                             # 使用OCR提取文本
                             text = self._extract_text_from_image(crop_img_np)
-                            markdown_content.append(f"{text}\n\n")
+                            if text and text.strip():
+                                markdown_text += f"{text}\n\n"
                             
                         elif block_type == "Title":
                             # 使用OCR提取标题文本
                             title_text = self._extract_text_from_image(crop_img_np)
-                            markdown_content.append(f"## {title_text}\n\n")
+                            if title_text and title_text.strip():
+                                markdown_text += f"## {title_text}\n\n"
                             
                         elif block_type == "List":
                             # 使用OCR提取列表文本并添加列表标记
                             list_text = self._extract_text_from_image(crop_img_np)
-                            list_items = list_text.split('\n')
-                            formatted_list = '\n'.join([f"- {item}" for item in list_items if item.strip()])
-                            markdown_content.append(f"{formatted_list}\n\n")
+                            if list_text:
+                                list_items = list_text.split('\n')
+                                formatted_list = '\n'.join([f"- {item}" for item in list_items if item.strip()])
+                                if formatted_list:
+                                    markdown_text += f"{formatted_list}\n\n"
                             
                         elif block_type == "Figure":
                             # 将图像转换为base64并嵌入Markdown
                             img_base64 = self._image_to_base64(crop_img)
-                            markdown_content.append(f"![图片](data:image/png;base64,{img_base64})\n\n")
+                            markdown_text += f"![图片](data:image/png;base64,{img_base64})\n\n"
                             
                             # 检查图像中是否有文本
                             img_text = self._extract_text_from_image(crop_img_np)
-                            if img_text.strip():
-                                markdown_content.append(f"*图片文本: {img_text}*\n\n")
+                            if img_text and img_text.strip():
+                                markdown_text += f"*图片文本: {img_text}*\n\n"
                             
                         elif block_type == "Table":
                             # 使用表格识别模型提取表格
@@ -244,7 +257,8 @@ class PDFService:
                             if not table_markdown:
                                 # 如果高级表格识别失败，回退到基本方法
                                 table_markdown = self._extract_table_basic(page, (x1, y1, x2, y2))
-                            markdown_content.append(f"{table_markdown}\n\n")
+                            if table_markdown:
+                                markdown_text += f"{table_markdown}\n\n"
                             
                         elif block_type == "Formula":
                             # 识别公式为LaTeX
@@ -252,21 +266,56 @@ class PDFService:
                             if latex_formula:
                                 # 根据公式类型添加不同的Markdown标记
                                 if block.get("inline", False):
-                                    markdown_content.append(f"${latex_formula}$\n\n")
+                                    markdown_text += f"${latex_formula}$\n\n"
                                 else:
-                                    markdown_content.append(f"$$\n{latex_formula}\n$$\n\n")
+                                    markdown_text += f"$$\n{latex_formula}\n$$\n\n"
                             else:
                                 # 如果公式识别失败，将其作为图像插入
                                 img_base64 = self._image_to_base64(crop_img)
-                                markdown_content.append(f"![公式](data:image/png;base64,{img_base64})\n\n")
+                                markdown_text += f"![公式](data:image/png;base64,{img_base64})\n\n"
                 
-                # 后处理：合并相邻的文本块
-                processed_content = self._post_process_markdown(''.join(markdown_content))
-                return processed_content
+                # 对生成的Markdown进行后处理
+                markdown_text = self._post_process_markdown(markdown_text)
+                
+                # 确保返回非空文本
+                if not markdown_text.strip():
+                    logger.warning("生成的Markdown文本为空，尝试提取基本文本")
+                    with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:  # 重新打开新的文件对象
+                        for page in pdf.pages:
+                            text = page.extract_text()
+                            if text and text.strip():
+                                markdown_text += f"{text}\n\n"
+                
+                return markdown_text if markdown_text.strip() else "*无法提取PDF内容*"
                 
         except Exception as e:
-            logger.error(f"PDF转Markdown失败: {e}")
+            logger.error(f"PDF处理失败: {e}")
+            # 记录错误并返回基本文本
+            try:
+                with pdfplumber.open(pdf_file) as pdf:
+                    markdown_text = ""
+                    for page in pdf.pages:
+                        text = page.extract_text()
+                        if text and text.strip():
+                            markdown_text += f"{text}\n\n"
+                    return markdown_text if markdown_text.strip() else "*无法提取PDF内容*"
+            except Exception as e2:
+                logger.error(f"基本文本提取也失败: {e2}")
+                return "*无法提取PDF内容*"
+
+                                
+        except Exception as e:
+            logger.error(f"PDF语法错误: {e}")
+            raise RuntimeError("无效的PDF文件结构") from e
+        except IOError as e:
+            logger.error(f"文件IO错误: {e}")
+            raise RuntimeError("文件读取失败") from e
+        except RuntimeError as e:
+            # 已记录的异常直接传递
             raise
+        except Exception as e:
+            logger.error(f"未知错误: {traceback.format_exc()}")
+            raise RuntimeError(f"PDF处理失败: {str(e)}") from e
     
     def _detect_formulas(self, image: np.ndarray) -> List[Dict]:
         """
@@ -324,7 +373,9 @@ class PDFService:
                 return []
                 
         except Exception as e:
-            logger.error(f"公式检测失败: {e}")
+            logger.error(f"公式检测失败: {traceback.format_exc()}")
+            # 返回空布局并记录警告图像
+            cv2.imwrite(f'layout_failure_{time.time()}.jpg', img_np)
             return []
         
         finally:
@@ -490,12 +541,45 @@ class PDFService:
             return ""
     
     def _post_process_markdown(self, markdown: str) -> str:
-        """
-        对生成的Markdown进行后处理，合并相邻文本块，清理多余空行等
-        """
-        # 替换连续的多个空行为两个空行
-        processed = '\n\n'.join([line for line in markdown.split('\n\n') if line.strip()])
+        """后处理方法，保留有效内容"""
+        if not markdown.strip():
+            return markdown
+            
+        # 保留合理的换行结构
+        processed = []
+        prev_line_empty = False
+        for line in markdown.split('\n'):
+            stripped_line = line.strip()
+            if not stripped_line:
+                if not prev_line_empty:
+                    processed.append('')
+                    prev_line_empty = True
+            else:
+                processed.append(line)
+                prev_line_empty = False
         
-        # 其他后处理逻辑可以在这里添加
+        # 合并连续的列表项
+        merged = []
+        in_list = False
+        for line in processed:
+            if line.startswith(('- ', '* ', '1. ')):
+                if not in_list:
+                    merged.append('')  # 列表前添加空行
+                    in_list = True
+                merged.append(line)
+            else:
+                if in_list:
+                    merged.append('')  # 列表后添加空行
+                    in_list = False
+                merged.append(line)
         
-        return processed
+        return '\n'.join(merged)
+
+
+def _fallback_extraction(self, pdf_content: bytes) -> str:
+    """基本文本提取回退方法"""
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_content)) as pdf:
+            return "\n\n".join(page.extract_text() or "" for page in pdf.pages)
+    except Exception:
+        return "*无法提取PDF内容*"

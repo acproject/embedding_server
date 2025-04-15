@@ -107,7 +107,7 @@ def main():
         print(f"向量前5个值: {text_embedding[:5]}")
         
         # 2. PDF文档示例
-        pdf_path = "examples/2412.01506v1.pdf"
+        pdf_path = "examples/2024-Aligning Large Language Models with Humans.pdf"
         # 使用专门的PDF API端点处理PDF文件
         try:
             with open(pdf_path, "rb") as f:
@@ -132,6 +132,30 @@ def main():
                 print(f"向量前5个值: {pdf_embedding[:5]}")
                 print(f"模型: {result['model']}")
                 print(f"处理时间: {result['processing_time']:.2f}秒")
+                
+                # 设置输出目录
+                out_dir = os.path.join(os.path.dirname(pdf_path), 'out')
+                os.makedirs(out_dir, exist_ok=True)
+
+                # 生成对应的Markdown文件
+                if result.get('markdown_text'):
+                    markdown_path = os.path.join(out_dir, os.path.basename(os.path.splitext(pdf_path)[0] + '.md'))
+                    try:
+                        with open(markdown_path, 'w', encoding='utf-8') as f:
+                            f.write(result['markdown_text'])
+                        print(f"已生成Markdown文件: {markdown_path}")
+                    except Exception as e:
+                        print(f"保存Markdown文件失败: {e}")
+                else:
+                    print("警告: 服务端返回的markdown_text为空")
+
+                # 保存向量数据到CSV文件
+                csv_path = os.path.join(out_dir, os.path.basename(os.path.splitext(pdf_path)[0] + '_vector.csv'))
+                try:
+                    np.savetxt(csv_path, pdf_embedding, delimiter=',')
+                    print(f"已保存向量数据到: {csv_path}")
+                except Exception as e:
+                    print(f"保存CSV文件失败: {e}")
             else:
                 print(f"PDF处理失败: 响应中没有找到embedding字段")
         except Exception as e:
