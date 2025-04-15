@@ -271,8 +271,15 @@ class PDFService:
     def _detect_formulas(self, image: np.ndarray) -> List[Dict]:
         """
         使用YOLOv8检测图像中的公式
+        
+        Args:
+            image: 输入图像的numpy数组
+            
+        Returns:
+            List[Dict]: 检测到的公式列表，每个公式包含位置坐标、置信度和类型信息
         """
         if self.formula_det_model is None:
+            logger.warning("公式检测模型未加载，跳过公式检测")
             return []
         
         try:
@@ -281,22 +288,49 @@ class PDFService:
             formula_blocks = []
             
             # 处理检测结果
-            for pred in results.xyxy[0].cpu().numpy():
-                x1, y1, x2, y2, conf, cls = pred
-                # 判断是否为行内公式或行间公式
-                is_inline = int(cls) == 0  # 假设类别0为行内公式，1为行间公式
+            if not hasattr(results[0], 'boxes'):
+                logger.warning("检测结果格式不正确，可能是模型版本不兼容")
+                return []
                 
-                formula_blocks.append({
-                    "type": "Formula",
-                    "coordinates": (int(x1), int(y1), int(x2), int(y2)),
-                    "confidence": float(conf),
-                    "inline": is_inline
-                })
-            
-            return formula_blocks
+            boxes = results[0].boxes
+            if boxes is None or len(boxes) == 0:
+                return []
+                
+            # 获取边界框坐标
+            try:
+                coords = boxes.xyxy.cpu().numpy()
+                confs = boxes.conf.cpu().numpy()
+                clss = boxes.cls.cpu().numpy()
+                
+                # 处理每个检测框
+                for i in range(len(coords)):
+                    x1, y1, x2, y2 = coords[i]
+                    conf = confs[i]
+                    cls = clss[i]
+                    
+                    # 判断是否为行内公式或行间公式
+                    is_inline = int(cls) == 0  # 假设类别0为行内公式，1为行间公式
+                    
+                    formula_blocks.append({
+                        "type": "Formula",
+                        "coordinates": (int(x1), int(y1), int(x2), int(y2)),
+                        "confidence": float(conf),
+                        "inline": is_inline
+                    })
+                
+                return formula_blocks
+            except Exception as e:
+                logger.error(f"处理检测框时出错: {e}")
+                return []
+                
         except Exception as e:
             logger.error(f"公式检测失败: {e}")
             return []
+        
+        finally:
+            # 清理GPU内存
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
     
     def _merge_blocks(self, layout_blocks, formula_blocks) -> List[Dict]:
         """
