@@ -17,7 +17,7 @@ open-clip-torch==2.32.0
 pillow>=11.0.0
 python-multipart==0.0.20
 opencv-python>=4.5.0
-detectron2==0.6
+
 numpy>=1.20.0
 scipy>=1.7.0
 matplotlib>=3.5.0

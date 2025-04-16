@@ -9,6 +9,9 @@ import os
 import requests
 import json
 import numpy as np
+import base64
+from PIL import Image
+import io
 
 # 嵌入服务URL
 EMBEDDING_SERVICE_URL = "http://localhost:8086/api/embedding"
@@ -113,9 +116,18 @@ def main():
             with open(pdf_path, "rb") as f:
                 pdf_content = f.read()
             
-            # 使用multipart/form-data发送PDF文件
+            # 添加可视化参数
+            visualize = True  # 暂时设置为False，直到服务端支持可视化功能
+            
+            # 使用multipart/form-data发送PDF文件，并添加visualize参数
             files = {"file": (os.path.basename(pdf_path), pdf_content, "application/pdf")}
-            response = requests.post("http://localhost:8086/api/pdf_embedding", files=files)
+            
+            # 只有在启用可视化时才添加visualize参数
+            params = {}
+            if visualize:
+                params["visualize"] = "true"
+            
+            response = requests.post("http://localhost:8086/api/pdf_embedding", files=files, params=params)
             
             # 检查响应状态
             response.raise_for_status()
@@ -156,8 +168,71 @@ def main():
                     print(f"已保存向量数据到: {csv_path}")
                 except Exception as e:
                     print(f"保存CSV文件失败: {e}")
+                
+                # 处理可视化图像
+                if visualize and "visualization_images" in result and result["visualization_images"]:
+                    viz_dir = os.path.join(out_dir, 'visualization')
+                    os.makedirs(viz_dir, exist_ok=True)
+                    
+                    print(f"\n=== 可视化结果 ===")
+                    print(f"共有 {len(result['visualization_images'])} 张可视化图像")
+                    
+                    # 保存每张可视化图像
+                    for i, img_base64 in enumerate(result["visualization_images"]):
+                        try:
+                            # 从base64字符串解码图像
+                            if img_base64.startswith('data:image'):
+                                # 移除MIME类型前缀
+                                img_data = img_base64.split(',')[1]
+                            else:
+                                img_data = img_base64
+                                
+                            img_bytes = base64.b64decode(img_data)
+                            img = Image.open(io.BytesIO(img_bytes))
+                            
+                            # 保存图像
+                            img_path = os.path.join(viz_dir, f"visualization_{i+1}.png")
+                            img.save(img_path)
+                            print(f"已保存可视化图像: {img_path}")
+                        except Exception as e:
+                            print(f"保存可视化图像 {i+1} 失败: {e}")
+                elif visualize:
+                    print("服务端未返回可视化图像，可能不支持可视化功能")
             else:
                 print(f"PDF处理失败: 响应中没有找到embedding字段")
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 500 and "visualize" in str(e):
+                print(f"PDF处理失败: 服务端不支持可视化功能，请将visualize设置为False")
+                print("尝试不使用可视化功能重新处理PDF...")
+                
+                # 重试，不使用可视化功能
+                try:
+                    files = {"file": (os.path.basename(pdf_path), pdf_content, "application/pdf")}
+                    response = requests.post("http://localhost:8086/api/pdf_embedding", files=files)
+                    response.raise_for_status()
+                    
+                    result = response.json()
+                    if "embedding" in result:
+                        pdf_embedding = np.array(result["embedding"], dtype=np.float32)
+                        print("\n=== PDF处理结果（无可视化）===")
+                        print(f"文件: {pdf_path}")
+                        print(f"向量维度: {pdf_embedding.shape}")
+                        print(f"向量前5个值: {pdf_embedding[:5]}")
+                        print(f"模型: {result['model']}")
+                        print(f"处理时间: {result['processing_time']:.2f}秒")
+                        
+                        # 设置输出目录
+                        out_dir = os.path.join(os.path.dirname(pdf_path), 'out')
+                        os.makedirs(out_dir, exist_ok=True)
+                        
+                        # 保存向量数据到CSV文件
+                        csv_path = os.path.join(out_dir, os.path.basename(os.path.splitext(pdf_path)[0] + '_vector.csv'))
+                        np.savetxt(csv_path, pdf_embedding, delimiter=',')
+                        print(f"已保存向量数据到: {csv_path}")
+                except Exception as retry_e:
+                    print(f"重试PDF处理失败: {retry_e}")
+            else:
+                print(f"PDF处理失败: {e}")
         except Exception as e:
             print(f"PDF处理失败: {e}")
         
