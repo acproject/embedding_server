@@ -54,13 +54,14 @@ class LayoutAnalyzer:
             self.layout_model = None
             logger.warning("将使用基本文本提取模式")
     
-    def analyze_page(self, image: np.ndarray) -> List[Dict]:
+    def analyze_page(self, image: np.ndarray, target_size=None) -> List[Dict]:
         """
         分析页面布局
         
         Args:
             image: 页面图像的numpy数组
-            
+            target_size: 目标图像尺寸 (width, height)，用于坐标转换
+                
         Returns:
             List[Dict]: 布局元素列表，每个元素包含类型、坐标等信息
         """
@@ -73,16 +74,47 @@ class LayoutAnalyzer:
             results = self.layout_model(image)
             layout = []
             
+            # 获取当前图像尺寸
+            img_h, img_w = image.shape[:2]
+            
+            # 计算坐标转换比例（如果需要）
+            scale_x, scale_y = 1.0, 1.0
+            if target_size is not None:
+                target_w, target_h = target_size
+                scale_x = target_w / img_w
+                scale_y = target_h / img_h
+                logger.info(f"应用坐标转换: 从 {img_w}x{img_h} 到 {target_w}x{target_h}, 比例: {scale_x:.2f}x{scale_y:.2f}")
+            
             for result in results:
                 for box in result.boxes:
+                    # 获取坐标
+                    coords = box.xyxy[0].tolist()
+                    
+                    # 应用坐标转换
+                    x0 = int(coords[0] * scale_x)
+                    y0 = int(coords[1] * scale_y)
+                    x1 = int(coords[2] * scale_x)
+                    y1 = int(coords[3] * scale_y)
+                    
                     layout.append({
                         "type": result.names[int(box.cls)],
-                        "coordinates": [int(x) for x in box.xyxy[0].tolist()],
+                        "coordinates": [x0, y0, x1, y1],
                         "confidence": float(box.conf)
                     })
             
             # 检测公式
             formula_blocks = self._detect_formulas(image)
+            
+            # 对公式块也应用相同的坐标转换
+            if target_size is not None:
+                for block in formula_blocks:
+                    coords = block["coordinates"]
+                    block["coordinates"] = [
+                        int(coords[0] * scale_x),
+                        int(coords[1] * scale_y),
+                        int(coords[2] * scale_x),
+                        int(coords[3] * scale_y)
+                    ]
             
             # 合并布局元素和公式元素
             all_blocks = layout + formula_blocks
@@ -360,8 +392,158 @@ class LayoutAnalyzer:
                 # 添加标签
                 label = f"{block_type} ({block.get('confidence', 0):.2f})"
                 cv2.putText(viz_img, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            
+                
             return viz_img
         except Exception as e:
             logger.error(f"布局可视化失败: {e}")
             return image
+
+
+def analyze_page_with_prior(self, image: np.ndarray, page=None, pdf_structure=None, dpi=200) -> List[Dict]:
+    """
+    结合PDF源数据和布局模型分析页面
+    
+    Args:
+        image: 页面图像的numpy数组
+        page: PyMuPDF页面对象
+        pdf_structure: PDF预处理得到的结构信息
+        dpi: 图像的DPI值
+            
+    Returns:
+        List[Dict]: 布局元素列表
+    """
+    # 获取模型预测的布局
+    model_layout = self.analyze_page(image, page, dpi)
+    
+    # 如果没有PDF源数据，直接返回模型结果
+    if page is None or pdf_structure is None:
+        return model_layout
+    
+    # 获取当前页面的结构信息
+    page_idx = page.number
+    if page_idx >= len(pdf_structure["pages"]):
+        return model_layout
+    
+    page_structure = pdf_structure["pages"][page_idx]
+    
+    # 计算PDF坐标到像素坐标的转换比例
+    scale_factor = dpi / 72.0
+    img_h, img_w = image.shape[:2]
+    
+    # 从PDF源数据中提取布局元素
+    pdf_layout = []
+    for block in page_structure["blocks"]:
+        # 转换坐标
+        x0, y0, x1, y1 = block["bbox"]
+        x0 = int(x0 * scale_factor)
+        y0 = int(y0 * scale_factor)
+        x1 = int(x1 * scale_factor)
+        y1 = int(y1 * scale_factor)
+        
+        # 确保坐标在图像范围内
+        x0 = max(0, min(x0, img_w-1))
+        y0 = max(0, min(y0, img_h-1))
+        x1 = max(0, min(x1, img_w-1))
+        y1 = max(0, min(y1, img_h-1))
+        
+        pdf_layout.append({
+            "type": block["type"],
+            "coordinates": [x0, y0, x1, y1],
+            "confidence": 1.0,  # PDF源数据的置信度设为1.0
+            "source": "pdf"  # 标记来源
+        })
+    
+    # 为模型结果添加来源标记
+    for item in model_layout:
+        item["source"] = "model"
+    
+    # 整合两种结果
+    merged_layout = self._merge_layouts(model_layout, pdf_layout)
+    
+    return merged_layout
+
+def _merge_layouts(self, model_layout, pdf_layout) -> List[Dict]:
+    """
+    整合模型预测和PDF源数据的布局结果
+    
+    策略：
+    1. 对于重叠度高的元素，优先选择置信度高的
+    2. 对于PDF源数据中的特殊元素（如图表标题），保留下来
+    3. 对于模型检测到但PDF源数据中没有的元素，根据置信度决定是否保留
+    """
+    merged = []
+    used_pdf_indices = set()
+    
+    # 首先处理模型结果
+    for model_item in model_layout:
+        model_box = model_item["coordinates"]
+        best_match = None
+        best_iou = 0
+        best_idx = -1
+        
+        # 寻找与模型结果最匹配的PDF元素
+        for i, pdf_item in enumerate(pdf_layout):
+            if i in used_pdf_indices:
+                continue
+                
+            pdf_box = pdf_item["coordinates"]
+            iou = self._calculate_iou(model_box, pdf_box)
+            
+            if iou > 0.5 and iou > best_iou:  # IOU阈值设为0.5
+                best_match = pdf_item
+                best_iou = iou
+                best_idx = i
+        
+        if best_match:
+            # 如果找到匹配，选择置信度高的或特定类型
+            used_pdf_indices.add(best_idx)
+            
+            # 特殊处理某些类型
+            if best_match["type"] in ["figure_caption", "table_caption"]:
+                merged.append(best_match)
+            elif model_item["confidence"] >= 0.8:  # 模型高置信度
+                merged.append(model_item)
+            else:
+                merged.append(best_match)
+        else:
+            # 没有匹配，保留模型结果
+            if model_item["confidence"] >= 0.5:  # 置信度阈值
+                merged.append(model_item)
+    
+    # 添加未使用的PDF元素
+    for i, pdf_item in enumerate(pdf_layout):
+        if i not in used_pdf_indices:
+            merged.append(pdf_item)
+    
+    # 按照从上到下的顺序排序
+    sorted_merged = sorted(merged, key=lambda x: x["coordinates"][1])
+    
+    return sorted_merged
+
+def _calculate_iou(self, box1, box2) -> float:
+    """计算两个边界框的IOU"""
+    x0_1, y0_1, x1_1, y1_1 = box1
+    x0_2, y0_2, x1_2, y1_2 = box2
+    
+    # 计算交集区域
+    x0_i = max(x0_1, x0_2)
+    y0_i = max(y0_1, y0_2)
+    x1_i = min(x1_1, x1_2)
+    y1_i = min(y1_1, y1_2)
+    
+    # 如果没有交集
+    if x0_i >= x1_i or y0_i >= y1_i:
+        return 0.0
+    
+    # 计算交集面积
+    area_i = (x1_i - x0_i) * (y1_i - y0_i)
+    
+    # 计算两个框的面积
+    area_1 = (x1_1 - x0_1) * (y1_1 - y0_1)
+    area_2 = (x1_2 - x0_2) * (y1_2 - y0_2)
+    
+    # 计算并集面积
+    area_u = area_1 + area_2 - area_i
+    
+    # 返回IOU
+    return area_i / area_u if area_u > 0 else 0.0

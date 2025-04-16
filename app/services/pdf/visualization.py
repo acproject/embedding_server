@@ -165,36 +165,159 @@ class PDFVisualization:
         
         return viz_img
     
-    def visualize_layout(self, image, layout_results):
-        """可视化页面布局分析结果"""
+    def visualize_merged_layout(self, image, layout_results, dpi=200):
+        """
+        可视化混合布局分析结果
+        
+        Args:
+            image: PIL图像对象
+            layout_results: 混合布局分析结果列表
+            dpi: 图像的DPI值
+        
+        Returns:
+            PIL图像对象: 添加了布局标注的图像
+        """
         # 创建图像副本以进行绘制
         viz_img = image.copy()
         draw = ImageDraw.Draw(viz_img)
         
+        # 为不同类型的布局元素和来源使用不同颜色
+        type_colors = {
+            "title": (255, 0, 0),      # 红色
+            "text": (0, 255, 0),       # 绿色
+            "table": (0, 0, 255),      # 蓝色
+            "figure": (255, 255, 0),   # 黄色
+            "formula": (255, 0, 255),  # 紫色
+            "header": (0, 255, 255),   # 青色
+            "footer": (255, 128, 0),   # 橙色
+            "figure_caption": (128, 0, 128),  # 深紫色
+            "table_caption": (0, 128, 128),   # 深青色
+            "other": (128, 128, 128)   # 灰色
+        }
+        
+        source_styles = {
+            "model": {"width": 3, "dash": None},
+            "pdf": {"width": 2, "dash": (5, 5)}  # 虚线
+        }
+        
+        # 获取图像尺寸
+        img_w, img_h = viz_img.size
+        
+        # 绘制每个布局元素
+        for element in layout_results:
+            element_type = element.get("type", "other")
+            source = element.get("source", "model")
+            bbox = element.get("bbox") or element.get("coordinates")
+            
+            if bbox:
+                # 确保坐标为整数
+                x0 = max(0, int(bbox[0]))
+                y0 = max(0, int(bbox[1]))
+                x1 = min(img_w-1, int(bbox[2]))
+                y1 = min(img_h-1, int(bbox[3]))
+                
+                # 获取元素颜色和样式
+                color = type_colors.get(element_type, type_colors["other"])
+                style = source_styles.get(source, source_styles["model"])
+                
+                # 绘制边框
+                if style["dash"]:
+                    # PIL不直接支持虚线，需要手动实现
+                    self._draw_dashed_rectangle(draw, [x0, y0, x1, y1], color, style["width"], style["dash"])
+                else:
+                    draw.rectangle([x0, y0, x1, y1], outline=color, width=style["width"])
+                
+                # 添加标签
+                confidence = element.get("confidence", 1.0)
+                label = f"{element_type} ({source}, {confidence:.2f})"
+                label_y = max(0, y0 - 15)
+                draw.text((x0, label_y), label, fill=color)
+        
+        return viz_img
+    
+    def _draw_dashed_rectangle(self, draw, bbox, color, width, dash):
+        """绘制虚线矩形"""
+        x0, y0, x1, y1 = bbox
+        dash_on, dash_off = dash
+        
+        # 绘制上边
+        x, y = x0, y0
+        while x < x1:
+            x_end = min(x + dash_on, x1)
+            draw.line([(x, y), (x_end, y)], fill=color, width=width)
+            x = x_end + dash_off
+        
+        # 绘制右边
+        x, y = x1, y0
+        while y < y1:
+            y_end = min(y + dash_on, y1)
+            draw.line([(x, y), (x, y_end)], fill=color, width=width)
+            y = y_end + dash_off
+        
+        # 绘制下边
+        x, y = x1, y1
+        while x > x0:
+            x_start = max(x - dash_on, x0)
+            draw.line([(x, y), (x_start, y)], fill=color, width=width)
+            x = x_start - dash_off
+        
+        # 绘制左边
+        x, y = x0, y1
+        while y > y0:
+            y_start = max(y - dash_on, y0)
+            draw.line([(x, y), (x, y_start)], fill=color, width=width)
+            y = y_start - dash_off
+    
+    def visualize_layout(self, image, layout_results):
+        """
+        可视化页面布局分析结果
+        
+        Args:
+            image: PIL图像对象
+            layout_results: 布局分析结果列表
+        
+        Returns:
+            PIL图像对象: 添加了布局标注的图像
+        """
+        # 创建图像副本以进行绘制
+        viz_img = image.copy()
+        draw = ImageDraw.Draw(viz_img)
+        
+        # 获取图像尺寸
+        img_w, img_h = viz_img.size
+        
         # 为不同类型的布局元素使用不同颜色
         colors = {
-            "title": (255, 0, 0, 128),      # 红色
-            "text": (0, 255, 0, 128),       # 绿色
-            "table": (0, 0, 255, 128),      # 蓝色
-            "figure": (255, 255, 0, 128),   # 黄色
-            "formula": (255, 0, 255, 128),  # 紫色
-            "header": (0, 255, 255, 128),   # 青色
-            "footer": (255, 128, 0, 128),   # 橙色
-            "other": (128, 128, 128, 128)   # 灰色
+            "title": (255, 0, 0),      # 红色
+            "text": (0, 255, 0),       # 绿色
+            "table": (0, 0, 255),      # 蓝色
+            "figure": (255, 255, 0),   # 黄色
+            "formula": (255, 0, 255),  # 紫色
+            "header": (0, 255, 255),   # 青色
+            "footer": (255, 128, 0),   # 橙色
+            "other": (128, 128, 128)   # 灰色
         }
         
         # 绘制每个布局元素
         for element in layout_results:
             element_type = element.get("type", "other")
-            bbox = element.get("bbox")
+            bbox = element.get("bbox") or element.get("coordinates")
             
             if bbox:
+                # 确保坐标为整数且在图像范围内
+                x0 = max(0, min(int(bbox[0]), img_w-1))
+                y0 = max(0, min(int(bbox[1]), img_h-1))
+                x1 = max(0, min(int(bbox[2]), img_w-1))
+                y1 = max(0, min(int(bbox[3]), img_h-1))
+                
+                # 获取元素颜色
                 color = colors.get(element_type, colors["other"])
-                draw.rectangle(bbox, outline=color[:3], width=3)
-                draw.rectangle(bbox, fill=color)
+                
+                # 只绘制边框，不填充
+                draw.rectangle([x0, y0, x1, y1], outline=color, width=3)
                 
                 # 添加标签
-                label = element_type
-                draw.text((bbox[0], bbox[1] - 15), label, fill=(0, 0, 0))
+                label_y = max(0, y0 - 15)
+                draw.text((x0, label_y), element_type, fill=color)
         
         return viz_img

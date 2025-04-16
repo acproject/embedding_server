@@ -79,7 +79,7 @@ class PDFService:
                     page_content = ""  # 每页单独的内容容器
                     
                     # 提取页面图像
-                    img = page.to_image(resolution=300).original
+                    img = page.to_image(resolution=72).original
                     img_np = np.array(img)
                     
                     # 分析页面布局
