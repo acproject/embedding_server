@@ -10,7 +10,7 @@ def process_pdf(pdf_bytes, output_path):
         original_height = img_dict['height']
         
         # 记录最终输出尺寸
-        final_width, final_height = 1191, 1582  # 你提到的最终尺寸
+        final_width, final_height = 800, 1280  # 你提到的最终尺寸
         
         # 分析布局时传入目标尺寸
         layout_results = layout_analyzer.analyze_page(

@@ -104,10 +104,10 @@ class PDFService:
                         page_content += "---\n\n"
                     
                     # 处理每个布局元素
-                    for block in layout:
+                    for block_idx, block in enumerate(layout):
                         block_type = block["type"]
                         x1, y1, x2, y2 = block["coordinates"]
-                        logger.debug(f"页面 {page_num + 1}, 块 {block_idx+1}: 类型={block_type}, 原始坐标=({x1}, {y1}, {x2}, {y2})") # 添加日志记录块信息和坐标
+                        logger.debug(f"页面 {page_num + 1}, 块 {block_idx+1}: 类型={block_type}, 原始坐标=({x1}, {y1}, {x2}, {y2})")
                         
                         # 确保坐标有效
                         if x1 >= x2 or y1 >= y2:
@@ -117,18 +117,20 @@ class PDFService:
                         try:
                             crop_img = img.crop((x1, y1, x2, y2))
                             crop_img_np = np.array(crop_img)
-                            logger.debug(f"页面 {page_num + 1}, 块 {block_idx+1}: 裁剪区域 ({x1}, {y1}, {x2}, {y2}), 裁剪后图像尺寸: {crop_img.size}") # 添加日志记录裁剪信息
+                            logger.debug(f"页面 {page_num + 1}, 块 {block_idx+1}: 裁剪区域 ({x1}, {y1}, {x2}, {y2}), 裁剪后图像尺寸: {crop_img.size}")
                         except ValueError as crop_error:
                             logger.error(f"页面 {page_num + 1}, 块 {block_idx+1}: 裁剪失败 ({x1}, {y1}, {x2}, {y2}) - {crop_error}")
                             continue # 跳过处理此块
 
-                        if block_type == "Text":
+                        # 处理不同类型的块
+                        # 映射YOLO检测的类型到我们的处理类型
+                        if block_type == "Text" or block_type == "plain text":
                             # 使用OCR提取文本
                             text = self.text_extractor.extract_text(crop_img_np)
                             if text and text.strip():
                                 page_content += f"{text}\n\n"
                             
-                        elif block_type == "Title":
+                        elif block_type == "Title" or block_type == "title":
                             # 使用OCR提取标题文本
                             title_text = self.text_extractor.extract_text(crop_img_np)
                             if title_text and title_text.strip():
@@ -162,7 +164,7 @@ class PDFService:
                             if table_markdown:
                                 page_content += f"{table_markdown}\n\n"
                             
-                        elif block_type == "Formula":
+                        elif block_type == "Formula" or block_type == "isolate_formula":
                             # 识别公式为LaTeX
                             latex_formula = self.formula_extractor.recognize_formula(crop_img_np)
                             if latex_formula:
@@ -175,6 +177,18 @@ class PDFService:
                                 # 如果公式识别失败，将其作为图像插入
                                 img_base64 = self.visualization.image_to_base64(crop_img)
                                 page_content += f"![公式](data:image/png;base64,{img_base64})\n\n"
+                        
+                        elif block_type == "abandon":
+                            # 忽略被标记为abandon的块
+                            logger.debug(f"页面 {page_num + 1}, 块 {block_idx+1}: 类型={block_type}，已忽略")
+                            continue
+                        
+                        else:
+                            # 对于未知类型的块，尝试提取文本
+                            logger.warning(f"页面 {page_num + 1}, 块 {block_idx+1}: 未知类型 {block_type}，尝试作为文本处理")
+                            text = self.text_extractor.extract_text(crop_img_np)
+                            if text and text.strip():
+                                page_content += f"{text}\n\n"
                     
                     # 将页面内容添加到总内容
                     markdown_text += page_content
