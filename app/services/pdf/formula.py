@@ -33,7 +33,8 @@ class FormulaExtractor:
         """初始化公式识别相关模型"""
         try:
             # 加载YOLOv8公式检测模型
-            formula_det_path = os.path.join(self.models_dir, "formula/YOLOv8_ft/yolo_v8_ft.pt")
+            # 修复路径，避免重复的 "formula" 目录
+            formula_det_path = os.path.join(self.models_dir, "YOLOv8_ft/yolo_v8_ft.pt")
             if os.path.exists(formula_det_path):
                 logger.info(f"加载公式检测模型: {formula_det_path}")
                 from ultralytics import YOLO
@@ -44,7 +45,8 @@ class FormulaExtractor:
                 self.formula_det_model = None
             
             # 加载UniMERNet公式识别模型
-            formula_rec_path = os.path.join(self.models_dir, "formula_recognition/UniMERNet")
+            # 修复路径，避免重复的 "formula" 目录
+            formula_rec_path = os.path.join(self.models_dir, "formula_recognition/UniMERNet/pytorch_model.bin")
             if os.path.exists(formula_rec_path):
                 logger.info(f"加载公式识别模型: {formula_rec_path}")
                 # 这里需要根据UniMERNet的实际加载方式进行调整
@@ -141,3 +143,103 @@ class FormulaExtractor:
         except Exception as e:
             logger.error(f"公式识别失败: {e}")
             return None
+            
+    def test_formula_from_image(self, image_path: str) -> dict:
+        """
+        从图像文件测试公式检测和识别
+        
+        Args:
+            image_path: 图像文件路径
+            
+        Returns:
+            dict: 包含检测和识别结果的字典
+        """
+        try:
+            import cv2
+            from PIL import Image
+            
+            # 读取图像
+            if isinstance(image_path, str):
+                # 从文件路径读取
+                if not os.path.exists(image_path):
+                    return {"error": f"图像文件不存在: {image_path}"}
+                
+                # 使用OpenCV读取图像
+                image = cv2.imread(image_path)
+                if image is None:
+                    return {"error": f"无法读取图像: {image_path}"}
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            elif isinstance(image_path, np.ndarray):
+                # 直接使用提供的numpy数组
+                image = image_path
+            else:
+                # 尝试从PIL Image转换
+                try:
+                    image = np.array(image_path)
+                except:
+                    return {"error": "不支持的图像格式"}
+            
+            # 检测公式
+            formula_blocks = self.detect_formulas(image)
+            
+            results = {
+                "detection": {
+                    "count": len(formula_blocks),
+                    "formulas": formula_blocks
+                },
+                "recognition": []
+            }
+            
+            # 对每个检测到的公式进行识别
+            for i, block in enumerate(formula_blocks):
+                x1, y1, x2, y2 = block["coordinates"]
+                formula_image = image[y1:y2, x1:x2]
+                
+                # 识别公式
+                latex = self.recognize_formula(formula_image)
+                
+                results["recognition"].append({
+                    "index": i,
+                    "coordinates": block["coordinates"],
+                    "latex": latex,
+                    "confidence": block.get("confidence", 0.0)
+                })
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"公式测试失败: {e}")
+            return {"error": str(e)}
+            
+    def test_formula_from_base64(self, base64_str: str) -> dict:
+        """
+        从Base64编码的图像测试公式检测和识别
+        
+        Args:
+            base64_str: Base64编码的图像字符串
+            
+        Returns:
+            dict: 包含检测和识别结果的字典
+        """
+        try:
+            import base64
+            import cv2
+            import numpy as np
+            from PIL import Image
+            import io
+            
+            # 解码Base64字符串
+            if "base64," in base64_str:
+                base64_str = base64_str.split("base64,")[1]
+            
+            img_data = base64.b64decode(base64_str)
+            nparr = np.frombuffer(img_data, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            
+            # 使用图像测试函数
+            return self.test_formula_from_image(image)
+            
+        except Exception as e:
+            logger.error(f"Base64图像公式测试失败: {e}")
+            return {"error": str(e)}
