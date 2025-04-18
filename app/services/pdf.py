@@ -104,52 +104,68 @@ class PDFService:
         layout_info = {}
         
         try:
-            # 获取图像尺寸
+            # 获取原始图像尺寸
             img_width, img_height = img.size
-            logger.info(f"图像尺寸: 宽={img_width}, 高={img_height}")
+            logger.info(f"原始图像尺寸: 宽={img_width}, 高={img_height}")
+
+            # 定义YOLO模型期望的输入尺寸 (需要根据实际模型调整)
+            # 假设 DocLayout-YOLO 使用 800x1280 或类似的固定尺寸
+            # 更新为建议的尺寸，实际应用中应从模型配置或文档获取
+            yolo_input_width = 800  # 更新为建议值
+            yolo_input_height = 1280 # 更新为建议值
+            logger.info(f"假设YOLO输入尺寸: 宽={yolo_input_width}, 高={yolo_input_height}")
+
+            # 计算缩放比例
+            scale_x = img_width / yolo_input_width
+            scale_y = img_height / yolo_input_height
+            logger.info(f"坐标缩放比例: scale_x={scale_x:.4f}, scale_y={scale_y:.4f}")
             
             # 这里应该是调用YOLO模型的代码
-            # 例如: predictions = yolo_model.predict(img_np)
+            # 假设模型输入是调整大小后的图像 (e.g., yolo_input_width x yolo_input_height)
+            # 并且模型输出的 bbox 是相对于这个调整后尺寸的归一化坐标 [x_center, y_center, width, height]
+            # 例如: predictions = yolo_model.predict(resized_img_np)
             
             # 由于没有实际的YOLO模型，我们模拟一些预测结果
-            # 在实际代码中，这部分应该替换为真实的模型预测
+            # 假设这些 bbox 是相对于 yolo_input_width x yolo_input_height 的归一化坐标
             mock_predictions = [
-                {"class": "title", "confidence": 0.95, "bbox": [0.1, 0.1, 0.9, 0.15]},
-                {"class": "text", "confidence": 0.92, "bbox": [0.1, 0.2, 0.9, 0.6]},
-                {"class": "figure", "confidence": 0.88, "bbox": [0.2, 0.65, 0.8, 0.85]}
+                {"class": "title", "confidence": 0.95, "bbox": [0.5, 0.125, 0.8, 0.05]}, # [x_center_norm, y_center_norm, width_norm, height_norm]
+                {"class": "text", "confidence": 0.92, "bbox": [0.5, 0.4, 0.8, 0.4]},
+                {"class": "figure", "confidence": 0.88, "bbox": [0.5, 0.75, 0.6, 0.2]}
             ]
             
-            # 输出YOLO预测结果的原始格式
-            logger.info("YOLO预测结果原始格式:")
+            logger.info("模拟YOLO预测结果 (归一化到YOLO输入尺寸):")
             for i, pred in enumerate(mock_predictions):
-                logger.info(f"预测 {i+1}: 类别={pred['class']}, 置信度={pred['confidence']}, 边界框={pred['bbox']}")
+                logger.info(f"  预测 {i+1}: 类别={pred['class']}, 置信度={pred['confidence']:.2f}, 归一化BBox={pred['bbox']}")
             
             # 处理YOLO预测结果
             for pred in mock_predictions:  # 实际使用时替换为真实预测
                 class_name = pred["class"]
                 confidence = pred["confidence"]
                 
-                # 获取归一化坐标
-                x_center, y_center, width, height = pred["bbox"]
-                logger.info(f"处理 {class_name} 的归一化坐标: 中心点=({x_center}, {y_center}), 宽高=({width}, {height})")
+                # 获取相对于YOLO输入尺寸的归一化坐标 [x_center, y_center, width, height]
+                x_center_norm, y_center_norm, width_norm, height_norm = pred["bbox"]
                 
-                # 正确的归一化坐标映射
-                x_center_abs = x_center * img_width
-                y_center_abs = y_center * img_height
-                width_abs = width * img_width
-                height_abs = height * img_height
+                # 1. 转换为相对于YOLO输入尺寸的绝对像素坐标
+                x_center_yolo = x_center_norm * yolo_input_width
+                y_center_yolo = y_center_norm * yolo_input_height
+                width_yolo = width_norm * yolo_input_width
+                height_yolo = height_norm * yolo_input_height
                 
-                logger.info(f"映射到图像像素: 中心点=({x_center_abs}, {y_center_abs}), 宽高=({width_abs}, {height_abs})")
+                # 2. 使用缩放比例映射回原始图像的绝对像素坐标
+                x_center_orig = x_center_yolo * scale_x
+                y_center_orig = y_center_yolo * scale_y
+                width_orig = width_yolo * scale_x
+                height_orig = height_yolo * scale_y
                 
-                # 转换为左上右下坐标
-                x0 = int(x_center_abs - width_abs / 2)
-                y0 = int(y_center_abs - height_abs / 2)
-                x1 = int(x_center_abs + width_abs / 2)
-                y1 = int(y_center_abs + height_abs / 2)
+                # 3. 转换为原始图像上的左上右下坐标 (x0, y0, x1, y1)
+                x0 = int(x_center_orig - width_orig / 2)
+                y0 = int(y_center_orig - height_orig / 2)
+                x1 = int(x_center_orig + width_orig / 2)
+                y1 = int(y_center_orig + height_orig / 2)
                 
-                logger.info(f"最终边界框坐标: 左上=({x0}, {y0}), 右下=({x1}, {y1})")
+                logger.info(f"处理 {class_name}: 原始图像坐标 左上=({x0}, {y0}), 右下=({x1}, {y1})")
                 
-                # 确保坐标在图像范围内
+                # 确保坐标在原始图像范围内
                 x0 = max(0, x0)
                 y0 = max(0, y0)
                 x1 = min(img_width, x1)
@@ -186,6 +202,8 @@ class PDFService:
             draw.text((10, 10), f"YOLO分析失败: {str(e)}", fill=(255, 0, 0))
         
         return img, layout_info
+
+    # Removed duplicate _analyze_layout_with_yolo method
     
     def _analyze_layout_with_pymupdf(self, img: Image.Image, page: fitz.Page, zoom: float) -> Image.Image:
         """使用PyMuPDF原生方法分析页面布局"""
@@ -230,34 +248,6 @@ class PDFService:
         except Exception as e:
             logger.warning(f"表格检测失败: {e}")
         
-        return img
-    
-    def _analyze_layout_with_yolo(self, img: Image.Image, yolo_results, net_size=(640, 640)):
-        draw = ImageDraw.Draw(img)
-        w_img, h_img = img.size
-        w_net, h_net = net_size
-    
-        for pred in yolo_results:
-            # 假设 pred['bbox'] 是归一化到网络输入的 [x_center, y_center, width, height]
-            x_center, y_center, width, height = pred['bbox']
-            # 还原到网络输入像素
-            x_center *= w_net
-            y_center *= h_net
-            width *= w_net
-            height *= h_net
-            # 转为左上右下
-            x0_net = x_center - width / 2
-            y0_net = y_center - height / 2
-            x1_net = x_center + width / 2
-            y1_net = y_center + height / 2
-            # 映射到渲染图片尺寸
-            x0_img = x0_net * w_img / w_net
-            y0_img = y0_net * h_img / h_net
-            x1_img = x1_net * w_img / w_net
-            y1_img = y1_net * h_img / h_net
-            # 绘制
-            draw.rectangle([x0_img, y0_img, x1_img, y1_img], outline=(0, 0, 255), width=2)
-            draw.text((x0_img, y0_img-15), pred['class'], fill=(0, 0, 255))
         return img
     
     def _extract_pdf_text(self, pdf_content: bytes) -> str:

@@ -8,6 +8,7 @@ import base64
 from typing import Optional, Union, List
 from dotenv import load_dotenv
 import torch
+import sys
 
 # 设置使用镜像站点（移到这里，确保在导入其他模块前设置）
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
@@ -196,6 +197,10 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
+    # 配置 Loguru
+    logger.remove()
+    logger.add(sys.stderr, level="INFO") # 输出到 stderr，级别为 INFO
+    logger.add("file_{time}.log", rotation="500 MB", level="DEBUG") # 输出到文件，级别为 DEBUG
     uvicorn.run(
         "app.main:app", 
         host=os.getenv("HOST", "0.0.0.0"),

@@ -78,13 +78,14 @@ class PDFService:
                     logger.info(f"处理第 {page_num + 1}/{total_pages} 页")
                     page_content = ""  # 每页单独的内容容器
                     
-                    # 提取页面图像
-                    img = page.to_image(resolution=72).original
+                    # 提取页面图像 (提高分辨率至 300 DPI)
+                    img = page.to_image(resolution=300).original
                     img_np = np.array(img)
                     
-                    # 分析页面布局
+                    # 分析页面布局 (使用高分辨率图像)
                     layout = self.layout_analyzer.analyze_page(img_np)
-                    
+                    logger.debug(f"页面 {page_num + 1} 布局分析结果: {layout}") # 添加日志记录布局结果
+
                     # 如果没有布局模型或没有检测到任何块，将整个页面作为文本处理
                     if not layout:
                         text = self.text_extractor.extract_text(img_np)
@@ -106,9 +107,21 @@ class PDFService:
                     for block in layout:
                         block_type = block["type"]
                         x1, y1, x2, y2 = block["coordinates"]
-                        crop_img = img.crop((x1, y1, x2, y2))
-                        crop_img_np = np.array(crop_img)
+                        logger.debug(f"页面 {page_num + 1}, 块 {block_idx+1}: 类型={block_type}, 原始坐标=({x1}, {y1}, {x2}, {y2})") # 添加日志记录块信息和坐标
                         
+                        # 确保坐标有效
+                        if x1 >= x2 or y1 >= y2:
+                            logger.warning(f"页面 {page_num + 1}, 块 {block_idx+1}: 无效坐标 ({x1}, {y1}, {x2}, {y2})，跳过此块")
+                            continue
+                            
+                        try:
+                            crop_img = img.crop((x1, y1, x2, y2))
+                            crop_img_np = np.array(crop_img)
+                            logger.debug(f"页面 {page_num + 1}, 块 {block_idx+1}: 裁剪区域 ({x1}, {y1}, {x2}, {y2}), 裁剪后图像尺寸: {crop_img.size}") # 添加日志记录裁剪信息
+                        except ValueError as crop_error:
+                            logger.error(f"页面 {page_num + 1}, 块 {block_idx+1}: 裁剪失败 ({x1}, {y1}, {x2}, {y2}) - {crop_error}")
+                            continue # 跳过处理此块
+
                         if block_type == "Text":
                             # 使用OCR提取文本
                             text = self.text_extractor.extract_text(crop_img_np)
