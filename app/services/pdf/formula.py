@@ -45,8 +45,15 @@ class FormulaExtractor:
                 self.formula_det_model = None
             
             # 加载UniMERNet公式识别模型
-            # 修复路径，避免重复的 "formula" 目录
-            formula_rec_path = os.path.join(self.models_dir, "formula_recognition/UniMERNet/pytorch_model.bin")
+            # 修复路径，确保正确的目录结构
+            formula_rec_dir = os.path.join(self.models_dir, "formula_recognition/UniMERNet")
+            formula_rec_path = os.path.join(formula_rec_dir, "pytorch_model.bin")
+            
+            # 检查目录是否存在，如果不存在则创建
+            if not os.path.exists(formula_rec_dir):
+                os.makedirs(formula_rec_dir, exist_ok=True)
+                logger.info(f"创建公式识别模型目录: {formula_rec_dir}")
+            
             if os.path.exists(formula_rec_path):
                 logger.info(f"加载公式识别模型: {formula_rec_path}")
                 # 这里需要根据UniMERNet的实际加载方式进行调整
