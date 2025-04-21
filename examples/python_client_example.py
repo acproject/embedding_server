@@ -42,13 +42,14 @@ logger = logging.getLogger(__name__)
 EMBEDDING_SERVICE_URL = "http://localhost:8086/api/embedding"
 PDF_EMBEDDING_URL = "http://localhost:8086/api/pdf_embedding"
 
-def analyze_pdf_with_elements(pdf_content, max_pages=200):
+def analyze_pdf_with_elements(pdf_content, max_pages=200, output_dir=None):
     """
     分析PDF布局并解析公式、表格和图片
     
     Args:
         pdf_content: PDF文档的二进制内容
         max_pages: 最大处理页数
+        output_dir: 输出目录，如果提供则会实时保存处理结果
         
     Returns:
         PDFLayoutInfo对象，包含布局和元素信息
@@ -68,8 +69,22 @@ def analyze_pdf_with_elements(pdf_content, max_pages=200):
     total_pages = len(doc)
     print(f"PDF总页数: {total_pages}")
     
+    # 创建Markdown文件
+    markdown_file = None
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        markdown_path = os.path.join(output_dir, 'output.md')
+        markdown_file = open(markdown_path, 'w', encoding='utf-8')
+        print(f"将实时保存处理结果到: {markdown_path}")
+        # 写入文档标题
+        title = doc.metadata.get('title', '未命名文档')
+        markdown_file.write(f"# {title}\n\n")
+    
     # 处理所有页面（或最多max_pages页）
     pages_to_process = min(max_pages, total_pages)
+    
+    # 用于存储所有页面的文本内容
+    all_page_texts = []
     
     for page_idx in range(pages_to_process):
         print(f"\n处理第 {page_idx+1}/{pages_to_process} 页")
@@ -84,7 +99,6 @@ def analyze_pdf_with_elements(pdf_content, max_pages=200):
         img_data = pix.tobytes("png")
         img = Image.open(io.BytesIO(img_data))
         img_np = np.array(img)
-        
         
         # 获取渲染后的图像尺寸
         rendered_size = (img.width, img.height)
@@ -126,6 +140,9 @@ def analyze_pdf_with_elements(pdf_content, max_pages=200):
         except:
             font = ImageFont.load_default()
         
+        # 用于存储当前页面的Markdown内容
+        page_markdown = f"## 第 {page_idx+1} 页\n\n"
+        
         print(f"第 {page_idx+1} 页检测到的元素类型:")
         for i, block in enumerate(layout_results):
             
@@ -136,19 +153,14 @@ def analyze_pdf_with_elements(pdf_content, max_pages=200):
             x0, y0, x1, y1 = block["coordinates"]
             
             # 映射到渲染坐标
-            # mapped_coords = layout_info.map_coordinates(page_idx, model_coords)
-            # x0, y0, x1, y1 = mapped_coords
-            
-            # 更新block中的坐标为映射后的坐标
-            # block["original_coordinates"] = mapped_coords
             mapped_coords = block["coordinates"]
+            
             # 绘制边界框
             line_width = max(3, int(min(rendered_size) / 300))
             color = colors.get(block_type, (0, 0, 200))
             draw.rectangle([x0, y0, x1, y1], outline=color, width=line_width)
             
             # 添加标签
-            
             confidence = block.get("confidence", 0)
             label = f"{i+1}.{block_type} ({confidence:.2f})"
             text_bbox = draw.textbbox((x0, y0), label, font=font)
@@ -171,6 +183,12 @@ def analyze_pdf_with_elements(pdf_content, max_pages=200):
                     if extracted_text:
                         block["extracted_text"] = extracted_text
                         print(f"  文本: {extracted_text[:100]}{'...' if len(extracted_text) > 100 else ''}")
+                        
+                        # 添加到Markdown
+                        if block_type == "title":
+                            page_markdown += f"### {extracted_text}\n\n"
+                        else:
+                            page_markdown += f"{extracted_text}\n\n"
                 except Exception as e:
                     print(f"  文本提取失败: {e}")
             
@@ -188,6 +206,9 @@ def analyze_pdf_with_elements(pdf_content, max_pages=200):
                         layout_info.add_formula(page_idx, formula_info)
                         block["formula_idx"] = i
                         print(f"  公式: {latex[:100]}{'...' if len(latex) > 100 else ''}")
+                        
+                        # 添加到Markdown
+                        page_markdown += f"$$\n{latex}\n$$\n\n"
                 except Exception as e:
                     print(f"  公式提取失败: {e}")
             
@@ -205,6 +226,9 @@ def analyze_pdf_with_elements(pdf_content, max_pages=200):
                         layout_info.add_table(page_idx, table_info)
                         block["table_idx"] = i
                         print(f"  表格: {table_markdown[:100]}{'...' if len(table_markdown) > 100 else ''}")
+                        
+                        # 添加到Markdown
+                        page_markdown += f"{table_markdown}\n\n"
                 except Exception as e:
                     print(f"  表格提取失败: {e}")
             
@@ -219,24 +243,77 @@ def analyze_pdf_with_elements(pdf_content, max_pages=200):
                     layout_info.add_figure(page_idx, figure_info)
                     block["figure_idx"] = i
                     print(f"  图片: 尺寸 {crop_img.width}x{crop_img.height}")
+                    
+                    # 保存图片并添加到Markdown
+                    if output_dir:
+                        img_dir = os.path.join(output_dir, 'images')
+                        os.makedirs(img_dir, exist_ok=True)
+                        img_filename = f"page_{page_idx+1}_figure_{i+1}.png"
+                        img_path = os.path.join(img_dir, img_filename)
+                        crop_img = visualizer.resize_image_to_fit(crop_img, 800, 800)
+                        crop_img.save(img_path)
+                        page_markdown += f"![图片 {i+1}](images/{img_filename})\n\n"
                 except Exception as e:
                     print(f"  图片处理失败: {e}")
         
         # 生成页面的Markdown文本
         try:
             page_text = text_extractor.extract_text_from_page(page)
+            all_page_texts.append(page_text)
             if hasattr(layout_info, 'add_page_text'):
                 layout_info.add_page_text(page_idx, page_text)
         except Exception as e:
             print(f"页面文本提取失败: {e}")
+        
+        # 将当前页面的Markdown内容写入文件
+        if markdown_file:
+            markdown_file.write(page_markdown)
+            markdown_file.flush()  # 确保内容立即写入文件
+            print(f"已将第 {page_idx+1} 页内容写入Markdown文件")
+        
+        # 保存页面可视化图像
+        if output_dir:
+            viz_dir = os.path.join(output_dir, 'visualization')
+            os.makedirs(viz_dir, exist_ok=True)
+            layout_img = visualizer.resize_image_to_fit(layout_img, 800, 1024)
+            layout_img_path = os.path.join(viz_dir, f"page_{page_idx+1}_layout.png")
+            layout_img.save(layout_img_path)
+            print(f"已保存页面布局可视化: {layout_img_path}")
+        
+        # 释放内存
+        del img_np
+        del layout_img
+        del pix
+        if 'crop_img_np' in locals():
+            del crop_img_np
+        if 'crop_img' in locals():
+            del crop_img
+        
+        # 强制垃圾回收
+        import gc
+        gc.collect()
     
     # 生成完整的Markdown文本
     try:
-        markdown_text = text_extractor.extract_text_to_markdown(doc)
+        if all_page_texts:
+            full_text = "\n".join(all_page_texts)
+            markdown_text = text_extractor.convert_text_to_markdown(full_text)
+        else:
+            markdown_text = text_extractor.extract_text_to_markdown(doc)
         layout_info.markdown_text = markdown_text
+        
+        # 将完整的Markdown文本写入文件
+        if markdown_file:
+            markdown_file.write("\n\n## 完整文档内容\n\n")
+            markdown_file.write(markdown_text)
     except Exception as e:
         print(f"Markdown生成失败: {e}")
         layout_info.markdown_text = "Markdown生成失败"
+    
+    # 关闭Markdown文件
+    if markdown_file:
+        markdown_file.close()
+        print(f"Markdown文件已保存")
     
     return layout_info
 
@@ -338,8 +415,12 @@ def process_pdf_local(pdf_path, visualize=True):
         with open(pdf_path, "rb") as f:
             pdf_content = f.read()
         
-        # 使用管道分析PDF
-        layout_info = analyze_pdf_with_elements(pdf_content)
+        # 设置输出目录
+        out_dir = os.path.join(os.path.dirname(pdf_path), 'out')
+        os.makedirs(out_dir, exist_ok=True)
+        
+        # 使用管道分析PDF，并直接输出到文件
+        layout_info = analyze_pdf_with_elements(pdf_content, output_dir=out_dir)
         
         # 创建PDF服务实例获取嵌入向量
         pdf_service = PDFCoreService()
@@ -351,51 +432,19 @@ def process_pdf_local(pdf_path, visualize=True):
         # 存储可视化图像
         visualization_images = []
         
+        # 可视化图像已经在analyze_pdf_with_elements中生成，这里不需要重复生成
+        # 只需要收集已生成的图像路径
         if visualize:
-            # 打开PDF文档
-            doc = fitz.open(stream=pdf_content, filetype="pdf")
-            
-            # 处理每一页
-            for page_idx in range(min(len(doc), 10)):  # 限制处理前10页
-                print(f"生成第 {page_idx+1} 页可视化...")
-                
-                # 获取页面
-                page = doc[page_idx]
-                
-                # 渲染页面为图像
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                img_data = pix.tobytes("png")
-                page_image = Image.open(io.BytesIO(img_data))
-                
-                # 可视化页面布局
-                layout_viz = visualizer.visualize_page_layout(page_image, page)
-                visualization_images.append(layout_viz)
-                
-                # 可视化布局分析结果
-                layout_elements = layout_info.get_page_layout(page_idx)
-                if layout_elements:
-                    layout_analysis_viz = visualizer.visualize_layout(page_image, layout_elements)
-                    visualization_images.append(layout_analysis_viz)
-                
-                # 可视化表格
-                tables = layout_info.get_tables(page_idx)
-                if tables:
-                    table_viz = visualizer.visualize_table_detection(page_image, tables)
-                    visualization_images.append(table_viz)
-                
-                # 可视化公式
-                formulas = layout_info.get_formulas(page_idx)
-                if formulas:
-                    formula_viz = visualizer.visualize_formula_detection(page_image, {"detection": {"boxes": formulas}})
-                    visualization_images.append(formula_viz)
-            
-            # 调整图像大小到800*1024范围内
-            if visualization_images:
-                resized_images = []
-                for img in visualization_images:
-                    resized_img = visualizer.resize_image_to_fit(img, 800, 1024)
-                    resized_images.append(resized_img)
-                visualization_images = resized_images
+            viz_dir = os.path.join(out_dir, 'visualization')
+            if os.path.exists(viz_dir):
+                for img_file in os.listdir(viz_dir):
+                    if img_file.endswith('.png'):
+                        img_path = os.path.join(viz_dir, img_file)
+                        try:
+                            img = Image.open(img_path)
+                            visualization_images.append(img)
+                        except Exception as e:
+                            print(f"加载可视化图像失败: {img_path}, 错误: {e}")
         
         return embedding, layout_info, visualization_images
     
