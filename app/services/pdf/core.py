@@ -7,9 +7,11 @@ import numpy as np
 import torch
 import pdfplumber
 from typing import List, Dict, Tuple, Optional, Union
+import base64
+from PIL import Image
 
 # 导入其他模块
-from .visualization import PDFVisualization
+# 移除visualization导入
 from .layout import LayoutAnalyzer
 from .text import TextExtractor
 from .table import TableExtractor
@@ -39,12 +41,18 @@ class PDFService:
             self.text_extractor = TextExtractor(models_dir, device)
             self.table_extractor = TableExtractor(models_dir, device)
             self.formula_extractor = FormulaExtractor(models_dir, device)
-            self.visualization = PDFVisualization()
             
             logger.info("PDF处理服务初始化成功")
         except Exception as e:
             logger.error(f"PDF处理服务初始化失败: {e}")
             raise
+    
+    # 添加一个简单的图像转base64函数来替代visualization模块的功能
+    def _image_to_base64(self, image):
+        """将PIL图像转换为base64编码"""
+        buffered = io.BytesIO()
+        image.save(buffered, format="PNG")
+        return base64.b64encode(buffered.getvalue()).decode()
     
     def convert_pdf_to_markdown(self, pdf_content: bytes) -> str:
         """
@@ -147,7 +155,8 @@ class PDFService:
                             
                         elif block_type == "Figure":
                             # 将图像转换为base64并嵌入Markdown
-                            img_base64 = self.visualization.image_to_base64(crop_img)
+                            # 使用自定义的_image_to_base64方法替代visualization模块的方法
+                            img_base64 = self._image_to_base64(crop_img)
                             page_content += f"![图片](data:image/png;base64,{img_base64})\n\n"
                             
                             # 检查图像中是否有文本
@@ -175,7 +184,8 @@ class PDFService:
                                     page_content += f"$$\n{latex_formula}\n$$\n\n"
                             else:
                                 # 如果公式识别失败，将其作为图像插入
-                                img_base64 = self.visualization.image_to_base64(crop_img)
+                                # 使用自定义的_image_to_base64方法替代visualization模块的方法
+                                img_base64 = self._image_to_base64(crop_img)
                                 page_content += f"![公式](data:image/png;base64,{img_base64})\n\n"
                         
                         elif block_type == "abandon":
@@ -275,74 +285,14 @@ class PDFService:
             pdf_content: PDF文件内容
             
         Returns:
-            tuple: (embedding, visualization_images)
+            tuple: (embedding, markdown_text)
         """
-        import fitz
+        # 移除对visualization模块的依赖，简化此方法
+        # 将PDF转换为Markdown
+        markdown_text = self.convert_pdf_to_markdown(pdf_content)
         
-        # 初始化可视化图像列表
-        visualization_images = []
+        # 获取Markdown文本的嵌入向量
+        embedding = self.text_embedder.get_embedding(markdown_text)
         
-        try:
-            # 创建一个临时文件来保存PDF内容
-            with fitz.open(stream=pdf_content, filetype="pdf") as doc:
-                all_page_texts = []
-                
-                # 处理每一页
-                for page_idx, page in enumerate(doc):
-                    logger.info(f"处理PDF第 {page_idx+1}/{len(doc)} 页")
-                    
-                    # 渲染页面为图像
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                    img_data = pix.tobytes("png")
-                    img = self.visualization.bytes_to_pil_image(img_data)
-                    
-                    # 添加原始页面图像到可视化列表
-                    visualization_images.append(
-                        self.visualization.encode_image_to_base64(img, f"页面 {page_idx+1} - 原始图像")
-                    )
-                    
-                    # 提取页面文本
-                    page_text = page.get_text()
-                    all_page_texts.append(page_text)
-                    
-                    # 可视化页面布局
-                    layout_img = self.visualization.visualize_page_layout(img, page)
-                    visualization_images.append(
-                        self.visualization.encode_image_to_base64(layout_img, f"页面 {page_idx+1} - 布局分析")
-                    )
-                    
-                    # 可视化文本块
-                    text_blocks_img = self.visualization.visualize_text_blocks(img, page)
-                    visualization_images.append(
-                        self.visualization.encode_image_to_base64(text_blocks_img, f"页面 {page_idx+1} - 文本块")
-                    )
-                    
-                    # 可视化图像区域
-                    images_img = self.visualization.visualize_images(img, page)
-                    visualization_images.append(
-                        self.visualization.encode_image_to_base64(images_img, f"页面 {page_idx+1} - 图像区域")
-                    )
-                    
-                    # 可视化表格
-                    tables_img = self.visualization.visualize_tables(img, page)
-                    visualization_images.append(
-                        self.visualization.encode_image_to_base64(tables_img, f"页面 {page_idx+1} - 表格")
-                    )
-                    
-                    # 可视化公式
-                    formulas_img = self.visualization.visualize_formulas(img, page)
-                    visualization_images.append(
-                        self.visualization.encode_image_to_base64(formulas_img, f"页面 {page_idx+1} - 公式")
-                    )
-                
-                # 合并所有页面文本
-                combined_text = "\n".join(all_page_texts)
-                
-                # 获取文本嵌入向量
-                embedding = self.text_embedder.get_embedding(combined_text)
-                
-                return embedding, visualization_images
-        except Exception as e:
-            logger.error(f"PDF可视化处理失败: {e}")
-            # 如果可视化处理失败，回退到常规处理
-            return self.process_pdf(pdf_content), []
+        # 返回嵌入向量和Markdown文本，不再返回可视化图像
+        return embedding, markdown_text

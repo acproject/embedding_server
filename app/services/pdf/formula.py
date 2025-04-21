@@ -3,6 +3,8 @@ import numpy as np
 from PIL import Image
 import logging
 from typing import Optional, Dict, Any, List, Union
+import base64
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +69,148 @@ class FormulaExtractor:
             logger.error(f"公式识别模型初始化失败: {e}")
             self.formula_available = False
     
+    def _image_to_base64(self, image: Union[np.ndarray, Image.Image]) -> str:
+        """
+        将图像转换为base64编码
+        
+        Args:
+            image: 图像，numpy数组或PIL图像
+            
+        Returns:
+            str: base64编码的图像
+        """
+        # 确保图像是PIL图像
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+        
+        # 将图像转换为base64
+        buffered = io.BytesIO()
+        image.save(buffered, format="PNG")
+        return base64.b64encode(buffered.getvalue()).decode()
+    
+    def _crop_formula_area(self, image: Union[np.ndarray, Image.Image], box) -> Image.Image:
+        """
+        裁剪公式区域
+        
+        Args:
+            image: 原始图像
+            box: 公式区域坐标 [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+            
+        Returns:
+            Image.Image: 裁剪后的公式区域图像
+        """
+        # 确保图像是PIL图像
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+        
+        # 计算边界框
+        x_coords = [point[0] for point in box]
+        y_coords = [point[1] for point in box]
+        x0, y0 = max(0, int(min(x_coords))), max(0, int(min(y_coords)))
+        x1, y1 = min(image.width, int(max(x_coords))), min(image.height, int(max(y_coords)))
+        
+        # 裁剪图像
+        return image.crop((x0, y0, x1, y1))
+    
+    def recognize_formula(self, image: Union[np.ndarray, Image.Image]) -> str:
+        """
+        从图像中识别公式，如果识别区域小于图像的85%，则返回base64编码的图像
+        
+        Args:
+            image: 图像，numpy数组或PIL图像
+            
+        Returns:
+            str: 识别的公式文本或base64编码的图像
+        """
+        if not self.formula_available or self.formula_model is None:
+            logger.warning("公式识别模型未初始化或不可用")
+            # 如果模型不可用，直接返回图像的base64编码
+            return self._image_to_base64(image)
+        
+        try:
+            # 确保图像是numpy数组
+            if isinstance(image, Image.Image):
+                pil_image = image
+                image_np = np.array(image)
+            else:
+                pil_image = Image.fromarray(image)
+                image_np = image
+            
+            # 确保图像是RGB格式
+            if len(image_np.shape) == 2:
+                # 灰度图转RGB
+                image_np = np.stack([image_np] * 3, axis=2)
+            elif image_np.shape[2] == 4:
+                # RGBA转RGB
+                image_np = image_np[:, :, :3]
+            
+            # 获取图像尺寸
+            img_height, img_width = image_np.shape[:2]
+            img_area = img_height * img_width
+            
+            # 使用公式模型识别文本
+            result = self.formula_model.ocr(image_np, cls=False)
+            
+            # 解析结果
+            if result and len(result) > 0 and len(result[0]) > 0:
+                # 计算所有识别区域的总面积
+                total_formula_area = 0
+                formula_boxes = []
+                formula_texts = []
+                
+                for line in result[0]:
+                    if len(line) >= 2:
+                        box = line[0]  # 文本框坐标
+                        text, confidence = line[1]  # 文本内容和置信度
+                        
+                        # 计算边界框
+                        x_coords = [point[0] for point in box]
+                        y_coords = [point[1] for point in box]
+                        x0, y0 = min(x_coords), min(y_coords)
+                        x1, y1 = max(x_coords), max(y_coords)
+                        
+                        # 计算区域面积
+                        area = (x1 - x0) * (y1 - y0)
+                        total_formula_area += area
+                        
+                        formula_boxes.append(box)
+                        formula_texts.append(text)
+                
+                # 计算识别区域占总图像的比例
+                area_ratio = total_formula_area / img_area
+                logger.debug(f"公式区域占比: {area_ratio:.2f}")
+                
+                # 如果识别区域小于图像的85%，返回base64编码的图像
+                if area_ratio < 0.85:
+                    logger.info(f"公式区域占比小于85%，返回base64编码的图像")
+                    
+                    # 如果只有一个公式区域，裁剪该区域
+                    if len(formula_boxes) == 1:
+                        cropped_img = self._crop_formula_area(pil_image, formula_boxes[0])
+                        return self._image_to_base64(cropped_img)
+                    else:
+                        # 多个公式区域，返回整个图像
+                        return self._image_to_base64(pil_image)
+                else:
+                    # 合并所有文本
+                    full_text = " ".join(formula_texts)
+                    logger.info(f"公式识别结果: {full_text[:100]}{'...' if len(full_text) > 100 else ''}")
+                    return full_text
+            else:
+                logger.warning("未识别到公式，返回base64编码的图像")
+                return self._image_to_base64(pil_image)
+            
+        except Exception as e:
+            logger.error(f"公式识别失败: {e}")
+            # 出错时返回base64编码的图像
+            if 'pil_image' in locals():
+                return self._image_to_base64(pil_image)
+            else:
+                return self._image_to_base64(image)
+    
     def extract_formula(self, image: Union[np.ndarray, Image.Image]) -> str:
         """
-        从图像中提取公式
+        从图像中提取公式（兼容旧接口）
         
         Args:
             image: 图像，numpy数组或PIL图像

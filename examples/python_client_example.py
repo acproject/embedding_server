@@ -29,7 +29,7 @@ try:
     from app.services.pdf.layout import LayoutAnalyzer
     from app.services.pdf.text import TextExtractor
     from app.services.pdf.table import TableExtractor
-    from app.services.pdf.visualization import PDFVisualization
+    # 移除 PDFVisualization 导入
     from app.services.pdf.pdf_layout_info import PDFLayoutInfo
 except ImportError:
     print("警告: 无法导入PDF服务模块，将使用API方式处理PDF")
@@ -59,7 +59,7 @@ def analyze_pdf_with_elements(pdf_content, max_pages=200, output_dir=None):
     text_extractor = TextExtractor(models_dir=os.path.join(project_root, "models"), device="cpu")
     formula_extractor = FormulaExtractor(models_dir=os.path.join(project_root, "models"), device="cpu")
     table_extractor = TableExtractor(models_dir=os.path.join(project_root, "models"), device="cpu")
-    visualizer = PDFVisualization()
+    # 移除 visualizer 初始化
     
     # 初始化布局信息存储结构
     layout_info = PDFLayoutInfo(pdf_content=pdf_content)
@@ -81,12 +81,13 @@ def analyze_pdf_with_elements(pdf_content, max_pages=200, output_dir=None):
         markdown_file.write(f"# {title}\n\n")
     
     # 处理所有页面（或最多max_pages页）
-    pages_to_process = min(max_pages, total_pages)
+    pages_to_process = min(2, total_pages)
     
     # 用于存储所有页面的文本内容
     all_page_texts = []
     
     for page_idx in range(pages_to_process):
+        page_idx = page_idx + 4 # 页码从2开始
         print(f"\n处理第 {page_idx+1}/{pages_to_process} 页")
         page = doc[page_idx]
         
@@ -250,7 +251,7 @@ def analyze_pdf_with_elements(pdf_content, max_pages=200, output_dir=None):
                         os.makedirs(img_dir, exist_ok=True)
                         img_filename = f"page_{page_idx+1}_figure_{i+1}.png"
                         img_path = os.path.join(img_dir, img_filename)
-                        crop_img = visualizer.resize_image_to_fit(crop_img, 800, 800)
+                        # 移除对visualizer的调用
                         crop_img.save(img_path)
                         page_markdown += f"![图片 {i+1}](images/{img_filename})\n\n"
                 except Exception as e:
@@ -275,7 +276,7 @@ def analyze_pdf_with_elements(pdf_content, max_pages=200, output_dir=None):
         if output_dir:
             viz_dir = os.path.join(output_dir, 'visualization')
             os.makedirs(viz_dir, exist_ok=True)
-            layout_img = visualizer.resize_image_to_fit(layout_img, 800, 1024)
+            # 移除对visualizer的调用
             layout_img_path = os.path.join(viz_dir, f"page_{page_idx+1}_layout.png")
             layout_img.save(layout_img_path)
             print(f"已保存页面布局可视化: {layout_img_path}")
@@ -399,16 +400,15 @@ def get_embedding(content, content_type="text"):
         print(f"发生未知错误: {e}")
         raise
 
-def process_pdf_local(pdf_path, visualize=True):
+def process_pdf_local(pdf_path):
     """
     使用本地PDF处理pipeline处理PDF文件
     
     Args:
         pdf_path: PDF文件路径
-        visualize: 是否生成可视化结果
         
     Returns:
-        tuple: (embedding, layout_info, visualization_images)
+        tuple: (embedding, layout_info)
     """
     try:
         # 读取PDF文件
@@ -423,45 +423,27 @@ def process_pdf_local(pdf_path, visualize=True):
         layout_info = analyze_pdf_with_elements(pdf_content, output_dir=out_dir)
         
         # 创建PDF服务实例获取嵌入向量
-        pdf_service = PDFCoreService()
+        # 使用LaBSE模型进行文本嵌入
+        pdf_service = PDFCoreService(
+            models_dir=os.path.join(project_root, "models"),
+            text_embedder="/Users/acproject/workspace/python_projects/embedding_server/models/LaBSE"  # 使用LaBSE模型
+        )
         embedding = pdf_service.get_embedding(pdf_content)
-        
-        # 创建可视化工具
-        visualizer = PDFVisualization()
-        
-        # 存储可视化图像
-        visualization_images = []
-        
-        # 可视化图像已经在analyze_pdf_with_elements中生成，这里不需要重复生成
-        # 只需要收集已生成的图像路径
-        if visualize:
-            viz_dir = os.path.join(out_dir, 'visualization')
-            if os.path.exists(viz_dir):
-                for img_file in os.listdir(viz_dir):
-                    if img_file.endswith('.png'):
-                        img_path = os.path.join(viz_dir, img_file)
-                        try:
-                            img = Image.open(img_path)
-                            visualization_images.append(img)
-                        except Exception as e:
-                            print(f"加载可视化图像失败: {img_path}, 错误: {e}")
-        
-        return embedding, layout_info, visualization_images
+        return embedding, layout_info
     
     except Exception as e:
         logger.error(f"本地处理PDF失败: {e}", exc_info=True)
         raise
 
-def process_pdf_api(pdf_path, visualize=True):
+def process_pdf_api(pdf_path):
     """
     使用API处理PDF文件
     
     Args:
         pdf_path: PDF文件路径
-        visualize: 是否生成可视化结果
         
     Returns:
-        tuple: (embedding, markdown_text, visualization_images)
+        tuple: (embedding, markdown_text)
     """
     try:
         # 读取PDF文件
@@ -471,13 +453,8 @@ def process_pdf_api(pdf_path, visualize=True):
         # 使用multipart/form-data发送PDF文件
         files = {"file": (os.path.basename(pdf_path), pdf_content, "application/pdf")}
         
-        # 添加可视化参数
-        params = {}
-        if visualize:
-            params["visualize"] = "true"
-        
         # 发送请求
-        response = requests.post(PDF_EMBEDDING_URL, files=files, params=params)
+        response = requests.post(PDF_EMBEDDING_URL, files=files)
         
         # 检查响应状态
         response.raise_for_status()
@@ -492,24 +469,7 @@ def process_pdf_api(pdf_path, visualize=True):
             # 获取Markdown文本
             markdown_text = result.get("markdown_text", "")
             
-            # 获取可视化图像
-            visualization_images = []
-            if visualize and "visualization_images" in result:
-                for img_base64 in result["visualization_images"]:
-                    try:
-                        # 从base64字符串解码图像
-                        if img_base64.startswith('data:image'):
-                            img_data = img_base64.split(',')[1]
-                        else:
-                            img_data = img_base64
-                            
-                        img_bytes = base64.b64decode(img_data)
-                        img = Image.open(io.BytesIO(img_bytes))
-                        visualization_images.append(img)
-                    except Exception as e:
-                        logger.error(f"解码可视化图像失败: {e}")
-            
-            return embedding, markdown_text, visualization_images
+            return embedding, markdown_text
         else:
             raise ValueError("响应中没有找到embedding字段")
     
@@ -558,13 +518,10 @@ def main():
         # 设置可视化输出目录
         viz_dir = os.path.join(out_dir, 'visualization')
         
-        # 是否生成可视化结果
-        visualize = True
-        
         # 尝试使用本地处理pipeline
         try:
             print("\n=== 使用本地处理pipeline ===")
-            embedding, layout_info, visualization_images = process_pdf_local(pdf_path, visualize)
+            embedding, layout_info = process_pdf_local(pdf_path)
             
             # 输出处理结果
             print("\n=== PDF处理结果 ===")
@@ -589,18 +546,12 @@ def main():
             except Exception as e:
                 print(f"保存CSV文件失败: {e}")
             
-            # 保存可视化图像
-            if visualize and visualization_images:
-                print(f"\n=== 可视化结果 ===")
-                print(f"共有 {len(visualization_images)} 张可视化图像")
-                save_visualization_images(visualization_images, viz_dir)
-        
         except (ImportError, NameError) as e:
             print(f"本地处理pipeline不可用: {e}")
             print("尝试使用API方式处理PDF...")
             
             # 使用API处理PDF
-            embedding, markdown_text, visualization_images = process_pdf_api(pdf_path, visualize)
+            embedding, markdown_text = process_pdf_api(pdf_path)
             
             # 输出处理结果
             print("\n=== PDF处理结果（API方式）===")
@@ -624,19 +575,13 @@ def main():
                 print(f"已保存向量数据到: {csv_path}")
             except Exception as e:
                 print(f"保存CSV文件失败: {e}")
-            
-            # 保存可视化图像
-            if visualize and visualization_images:
-                print(f"\n=== 可视化结果 ===")
-                print(f"共有 {len(visualization_images)} 张可视化图像")
-                save_visualization_images(visualization_images, viz_dir)
         
         except Exception as e:
             print(f"本地处理pipeline失败: {e}")
             print("尝试使用API方式处理PDF...")
             
             # 使用API处理PDF
-            embedding, markdown_text, visualization_images = process_pdf_api(pdf_path, visualize)
+            embedding, markdown_text = process_pdf_api(pdf_path)
             
             # 输出处理结果
             print("\n=== PDF处理结果（API方式）===")
@@ -660,12 +605,6 @@ def main():
                 print(f"已保存向量数据到: {csv_path}")
             except Exception as e:
                 print(f"保存CSV文件失败: {e}")
-            
-            # 保存可视化图像
-            if visualize and visualization_images:
-                print(f"\n=== 可视化结果 ===")
-                print(f"共有 {len(visualization_images)} 张可视化图像")
-                save_visualization_images(visualization_images, viz_dir)
     
     except Exception as e:
         print(f"处理失败: {e}")
