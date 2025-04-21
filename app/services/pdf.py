@@ -7,7 +7,16 @@ from loguru import logger
 import torch
 from typing import List, Tuple, Dict, Any, Optional, Union
 
+# 导入PDF布局信息类
+from app.services.pdf.pdf_layout_info import PDFLayoutInfo
+from app.services.pdf.layout import LayoutAnalyzer
+from app.services.pdf.text import TextExtractor
+from app.services.pdf.formula import FormulaExtractor
+from app.services.pdf.table import TableExtractor
+from app.services.pdf.visualization import PDFVisualization
+
 class PDFService:
+    # 在PDFService类的__init__方法中，确保正确初始化FormulaExtractor
     def __init__(self, models_dir: str, text_embedder: Any, device: str = "cpu"):
         """
         初始化PDF服务
@@ -22,15 +31,27 @@ class PDFService:
         self.device = device
         logger.info(f"PDF服务初始化完成，使用设备: {device}")
         
-        # 尝试导入OCR相关库
-        try:
-            import pytesseract
-            self.ocr_available = True
-            logger.info("OCR服务可用")
-        except ImportError:
-            self.ocr_available = False
-            logger.warning("未安装pytesseract，OCR功能不可用")
-    
+        # 初始化各种分析器
+        self.layout_analyzer = LayoutAnalyzer(models_dir=models_dir, device=device)
+        self.text_extractor = TextExtractor(models_dir=models_dir, device=device)
+        
+        # 使用新的Paddle公式识别模型
+        logger.info("初始化Paddle公式识别模型...")
+        self.formula_extractor = FormulaExtractor(models_dir=models_dir, device=device)
+        
+        self.table_extractor = TableExtractor(models_dir=models_dir, device=device)
+        self.visualizer = PDFVisualization()
+        
+        # OCR服务将由外部设置
+        self.ocr_service = None
+        self.ocr_available = False
+
+    def set_ocr_service(self, ocr_service):
+        """设置OCR服务"""
+        self.ocr_service = ocr_service
+        self.ocr_available = True
+        logger.info("OCR服务已设置")
+
     def process_pdf(self, pdf_content: bytes) -> np.ndarray:
         """
         处理PDF并返回嵌入向量
@@ -49,51 +70,269 @@ class PDFService:
         
         return embedding
     
-    def process_pdf_with_visualization(self, pdf_content: bytes) -> Tuple[np.ndarray, List[str]]:
-        """处理PDF并返回嵌入向量和可视化图像"""
+    def analyze_pdf_with_elements(self, pdf_content: bytes, max_pages: int = 24) -> PDFLayoutInfo:
+        """
+        分析PDF布局并解析公式、表格和图片
+        
+        Args:
+            pdf_content: PDF文档的二进制内容
+            max_pages: 最大处理页数
+            
+        Returns:
+            PDFLayoutInfo对象，包含布局和元素信息
+        """
+        # 初始化布局信息存储结构
+        layout_info = PDFLayoutInfo(pdf_content=pdf_content)
+        
+        # 打开PDF
+        doc = fitz.open(stream=pdf_content, filetype="pdf")
+        total_pages = len(doc)
+        logger.info(f"PDF总页数: {total_pages}")
+        
+        # 处理所有页面（或最多max_pages页）
+        pages_to_process = min(max_pages, total_pages)
         visualization_images = []
         
-        try:
-            doc = fitz.open(stream=pdf_content, filetype="pdf")
-            all_page_texts = []
+        for page_idx in range(pages_to_process):
+            logger.info(f"\n处理第 {page_idx+1}/{pages_to_process} 页")
+            page = doc[page_idx]
             
-            for page_idx, page in enumerate(doc):
-                logger.info(f"处理PDF第 {page_idx+1}/{len(doc)} 页")
+            # 获取原始页面尺寸
+            original_size = (page.rect.width, page.rect.height)
+            logger.info(f"原始页面尺寸: {original_size}")
+            
+            # 渲染页面为图像
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 使用2x缩放获得更清晰的图像
+            img_data = pix.tobytes("png")
+            img = Image.open(io.BytesIO(img_data))
+            img_np = np.array(img)
+            
+            # 获取渲染后的图像尺寸
+            rendered_size = (img.width, img.height)
+            logger.info(f"渲染后图像尺寸: {rendered_size}")
+            logger.info(f"图像统计信息: 形状={img_np.shape}, 最小值={img_np.min()}, 最大值={img_np.max()}, 平均值={img_np.mean():.2f}")
+            
+            # 分析布局
+            layout_results = self.layout_analyzer.analyze_page(img_np)
+            logger.info(f"第 {page_idx+1} 页检测到的布局元素数量: {len(layout_results)}")
+            
+            # 获取模型处理的尺寸
+            model_size = (800, 1024)
+            if hasattr(self.layout_analyzer, 'model_input_size'):
+                model_size = self.layout_analyzer.model_input_size
+            logger.info(f"模型处理尺寸: {model_size}")
+            
+            # 打印原始布局结果，帮助调试
+            logger.info("原始布局结果:")
+            for i, block in enumerate(layout_results):
+                logger.info(f"  {i+1}. 类型={block['type']}, 坐标={block['coordinates']}, 置信度={block.get('confidence', 0):.2f}")
+            
+            # 存储布局信息
+            layout_info.add_page(page_idx, layout_results, rendered_size, model_size, original_size)
+            
+            # 创建可视化图像
+            orig_img = img.copy()
+            layout_img = img.copy()
+            draw = ImageDraw.Draw(layout_img)
+            
+            # 为不同类型的元素使用更鲜艳的颜色
+            colors = {
+                "plain text": (0, 200, 0),      # 绿色
+                "title": (255, 0, 0),           # 红色
+                "figure": (0, 0, 255),          # 蓝色
+                "table": (255, 165, 0),         # 橙色
+                "table_caption": (255, 135, 0), # 深橙色
+                "table_footnote": (255, 100, 0),# 红橙色
+                "isolate_formula": (128, 0, 128), # 紫色
+                "list": (0, 255, 255),          # 青色
+                "figure_caption": (0, 20, 45),  # 深蓝色
+                "abandon": (100, 100, 100),     # 灰色
+                "header": (255, 105, 180),      # 粉色
+                "footer": (100, 149, 237)       # 淡蓝色
+            }
+            
+            # 尝试加载更大的字体以提高可读性
+            try:
+                # 尝试几种常见字体
+                for font_name in ["Arial.ttf", "Helvetica.ttf", "DejaVuSans.ttf", "SimHei.ttf"]:
+                    try:
+                        font = ImageFont.truetype(font_name, 24)
+                        break
+                    except IOError:
+                        continue
+                else:
+                    font = ImageFont.load_default()
+            except Exception:
+                font = ImageFont.load_default()
+            
+            logger.info(f"第 {page_idx+1} 页检测到的元素类型:")
+            for i, block in enumerate(layout_results):
+                block_type = block["type"].lower()  # 转为小写以匹配颜色字典
+                logger.info(f"{i+1}. {block_type}")
                 
-                # 使用固定DPI渲染页面为图像
-                # 增加DPI以获得更清晰的图像
-                dpi = 300
-                zoom = dpi / 72  # 72是PDF的默认DPI
-                mat = fitz.Matrix(zoom, zoom)
-                pix = page.get_pixmap(matrix=mat)
+                # 获取模型坐标
+                model_coords = block["coordinates"]
                 
-                # 将pixmap转换为PIL图像
-                img_data = pix.tobytes("png")
-                img = Image.open(io.BytesIO(img_data))
+                # 修正坐标映射方法 - 考虑偏移问题
+                x0, y0, x1, y1 = model_coords
                 
-                # 添加原始页面图像
-                visualization_images.append(self._encode_image_to_base64(img, f"页面 {page_idx+1} - 原始图像"))
+                # 确保坐标在有效范围内
+                x0 = max(0, min(x0, model_size[0]))
+                y0 = max(0, min(y0, model_size[1]))
+                x1 = max(0, min(x1, model_size[0]))
+                y1 = max(0, min(y1, model_size[1]))
                 
-                # 提取页面文本
-                page_text = page.get_text()
-                all_page_texts.append(page_text)
+                # 计算映射比例
+                x_ratio = rendered_size[0] / model_size[0]
+                y_ratio = rendered_size[1] / model_size[1]
                 
-                # 使用PyMuPDF原生方法进行布局分析
-                # 注意：这里传递zoom参数，但在方法内部会重新计算实际比例
-                native_layout_img = self._analyze_layout_with_pymupdf(img.copy(), page, zoom)
-                visualization_images.append(self._encode_image_to_base64(native_layout_img, f"页面 {page_idx+1} - 布局分析"))
+                # 应用映射 - 修正偏移问题
+                # 根据观察，需要减少一定的偏移量
+                offset_x = int(rendered_size[0] * 0.05)  # 水平偏移校正，约5%
+                offset_y = int(rendered_size[1] * 0.05)  # 垂直偏移校正，约5%
                 
-                # 使用YOLO模型进行布局分析
-                layout_img, layout_info = self._analyze_layout_with_yolo(img.copy(), page, zoom)
-                visualization_images.append(self._encode_image_to_base64(layout_img, f"页面 {page_idx+1} - YOLO布局分析"))
+                mapped_x0 = max(0, int(x0 * x_ratio) - offset_x)
+                mapped_y0 = max(0, int(y0 * y_ratio) - offset_y)
+                mapped_x1 = max(mapped_x0 + 1, min(int(x1 * x_ratio) - offset_x, rendered_size[0]))
+                mapped_y1 = max(mapped_y0 + 1, min(int(y1 * y_ratio) - offset_y, rendered_size[1]))
+                
+                # 打印映射前后的坐标，帮助调试
+                logger.info(f"  模型坐标: ({x0}, {y0}, {x1}, {y1}) -> 映射坐标: ({mapped_x0}, {mapped_y0}, {mapped_x1}, {mapped_y1})")
+                
+                # 更新block中的坐标为映射后的坐标
+                block["original_coordinates"] = (mapped_x0, mapped_y0, mapped_x1, mapped_y1)
+                
+                # 使用映射后的坐标绘制边界框，线宽根据图像大小调整
+                line_width = max(3, int(min(rendered_size) / 300))
+                color = colors.get(block_type, (0, 0, 200))
+                draw.rectangle([mapped_x0, mapped_y0, mapped_x1, mapped_y1], outline=color, width=line_width)
+                
+                # 添加更清晰的标签
+                confidence = block.get("confidence", 0)
+                label = f"{i+1}.{block_type} ({confidence:.2f})"
+                
+                # 为标签添加背景以提高可读性
+                text_bbox = draw.textbbox((mapped_x0, mapped_y0-30), label, font=font)
+                draw.rectangle(text_bbox, fill=(255, 255, 255, 200))  # 半透明白色背景
+                draw.text((mapped_x0, mapped_y0-30), label, fill=color, font=font)
+                
+                # 尝试提取文本内容
+                try:
+                    # 确保裁剪区域有效
+                    if mapped_x1 > mapped_x0 and mapped_y1 > mapped_y0:
+                        # 裁剪区域并提取文本
+                        crop_img = img.crop((mapped_x0, mapped_y0, mapped_x1, mapped_y1))
+                        
+                        # 保存裁剪图像用于调试
+                        crop_path = f"/tmp/crop_{page_idx+1}_{i+1}_{block_type}.png"
+                        crop_img.save(crop_path)
+                        logger.info(f"  裁剪图像已保存到: {crop_path}")
+                        
+                        # 提取文本
+                        # 在处理文本块的部分，使用新的OCR服务
+                        # 找到类似这样的代码块：
+                        if block_type in ["plain text", "title"]:
+                            extracted_text = ""
+                            if self.ocr_available and self.ocr_service:
+                                # 使用新的OCR服务
+                                extracted_text = self.ocr_service.recognize_text(np.array(crop_img))
+                            else:
+                                # 使用原有的文本提取器作为备选
+                                extracted_text = self.text_extractor.extract_text(np.array(crop_img))
+                            
+                            if extracted_text:
+                                # 将提取的文本添加到block中
+                                block["extracted_text"] = extracted_text
+                                logger.info(f"  文本: {extracted_text[:100]}{'...' if len(extracted_text) > 100 else ''}")
+                        
+                        # 处理公式
+                        elif block_type == "isolate_formula":
+                            try:
+                                latex = self.formula_extractor.recognize_formula(np.array(crop_img))
+                                if latex:
+                                    formula_info = {
+                                        "element_idx": i,
+                                        "coordinates": (mapped_x0, mapped_y0, mapped_x1, mapped_y1),
+                                        "latex": latex,
+                                        "confidence": confidence
+                                    }
+                                    layout_info.add_formula(page_idx, formula_info)
+                                    block["formula_idx"] = i
+                                    logger.info(f"  公式(Paddle识别): {latex[:100]}{'...' if len(latex) > 100 else ''}")
+                            except Exception as e:
+                                logger.error(f"  公式提取失败: {e}")
+                        
+                        # 处理表格
+                        elif block_type == "table":
+                            try:
+                                table_markdown = self.table_extractor.extract_table(np.array(crop_img))
+                                if table_markdown:
+                                    table_info = {
+                                        "element_idx": i,
+                                        "coordinates": (mapped_x0, mapped_y0, mapped_x1, mapped_y1),
+                                        "markdown": table_markdown,
+                                        "confidence": confidence
+                                    }
+                                    layout_info.add_table(page_idx, table_info)
+                                    block["table_idx"] = i
+                                    logger.info(f"  表格: {table_markdown[:100]}{'...' if len(table_markdown) > 100 else ''}")
+                            except Exception as e:
+                                logger.error(f"  表格提取失败: {e}")
+                        
+                        # 处理图片
+                        elif block_type == "figure":
+                            try:
+                                img_base64 = self.visualizer.encode_image_to_base64(crop_img)
+                                figure_info = {
+                                    "element_idx": i,
+                                    "coordinates": (mapped_x0, mapped_y0, mapped_x1, mapped_y1),
+                                    "base64": img_base64.split(",")[1] if "," in img_base64 else img_base64,
+                                    "confidence": confidence,
+                                    "caption": "图片"
+                                }
+                                layout_info.add_figure(page_idx, figure_info)
+                                block["figure_idx"] = i
+                                logger.info(f"  图片已提取")
+                            except Exception as e:
+                                logger.error(f"  图片处理失败: {e}")
+                except Exception as e:
+                    logger.error(f"  处理失败: {e}")
+            
+            # 添加原始图像和布局图像到可视化结果
+            visualization_images.append(self._encode_image_to_base64(orig_img, f"页面 {page_idx+1} - 原始图像"))
+            visualization_images.append(self._encode_image_to_base64(layout_img, f"页面 {page_idx+1} - 布局分析"))
+            
+            # 显示提取的内容统计
+            logger.info("\n提取内容统计:")
+            logger.info(f"  文本块: {len([b for b in layout_results if b['type'].lower() in ['plain text', 'title']])}")
+            logger.info(f"  公式: {len(layout_info.get_formulas(page_idx))}")
+            logger.info(f"  表格: {len(layout_info.get_tables(page_idx))}")
+            logger.info(f"  图片: {len(layout_info.get_figures(page_idx))}")
+        
+        doc.close()
+        return layout_info, visualization_images
+    
+    def process_pdf_with_visualization(self, pdf_content: bytes) -> Tuple[np.ndarray, List[str]]:
+        """处理PDF并返回嵌入向量和可视化图像"""
+        try:
+            # 使用增强的布局分析方法
+            layout_info, visualization_images = self.analyze_pdf_with_elements(pdf_content)
+            
+            # 提取所有文本
+            all_texts = []
+            for page_idx in range(len(layout_info.pages)):
+                page_texts = []
+                for block in layout_info.get_page_layout(page_idx):
+                    if "extracted_text" in block:
+                        page_texts.append(block["extracted_text"])
+                all_texts.append("\n".join(page_texts))
             
             # 合并所有页面文本
-            combined_text = "\n".join(all_page_texts)
+            combined_text = "\n".join(all_texts)
             
             # 获取文本嵌入向量
             embedding = self.text_embedder._get_text_embedding(combined_text)
             
-            doc.close()
             return embedding, visualization_images
         except Exception as e:
             logger.error(f"PDF可视化处理失败: {e}")
@@ -173,11 +412,18 @@ class PDFService:
                 
                 # 根据类别选择不同的颜色
                 color_map = {
-                    "title": (255, 0, 0),      # 红色
-                    "text": (0, 255, 0),       # 绿色
-                    "figure": (0, 0, 255),     # 蓝色
-                    "table": (255, 165, 0),    # 橙色
-                    "formula": (128, 0, 128)   # 紫色
+                    "plain text": (0, 200, 0),      # 绿色
+                    "title": (255, 0, 0),           # 红色
+                    "figure": (0, 0, 255),          # 蓝色
+                    "table": (255, 165, 0),         # 橙色
+                    "table_caption": (255, 135, 0), # 深橙色
+                    "table_footnote": (255, 100, 0),# 红橙色
+                    "isolate_formula": (128, 0, 128), # 紫色
+                    "list": (0, 255, 255),          # 青色
+                    "figure_caption": (0, 20, 45),  # 深蓝色
+                    "abandon": (100, 100, 100),     # 灰色
+                    "header": (255, 105, 180),      # 粉色
+                    "footer": (100, 149, 237)       # 淡蓝色
                 }
                 color = color_map.get(class_name, (200, 200, 200))
                 

@@ -183,17 +183,20 @@ class PDFVisualization:
         
         # 为不同类型的布局元素和来源使用不同颜色
         type_colors = {
-            "title": (255, 0, 0),      # 红色
-            "text": (0, 255, 0),       # 绿色
-            "table": (0, 0, 255),      # 蓝色
-            "figure": (255, 255, 0),   # 黄色
-            "formula": (255, 0, 255),  # 紫色
-            "header": (0, 255, 255),   # 青色
-            "footer": (255, 128, 0),   # 橙色
-            "figure_caption": (128, 0, 128),  # 深紫色
-            "table_caption": (0, 128, 128),   # 深青色
-            "other": (128, 128, 128)   # 灰色
+            "plain text": (0, 200, 0),      # 绿色
+            "title": (255, 0, 0),           # 红色
+            "figure": (0, 0, 255),          # 蓝色
+            "table": (255, 165, 0),         # 橙色
+            "table_caption": (255, 135, 0), # 深橙色
+            "table_footnote": (255, 100, 0),# 红橙色
+            "isolate_formula": (128, 0, 128), # 紫色
+            "list": (0, 255, 255),          # 青色
+            "figure_caption": (0, 20, 45),  # 深蓝色
+            "abandon": (100, 100, 100),     # 灰色
+            "header": (255, 105, 180),      # 粉色
+            "footer": (100, 149, 237)       # 淡蓝色
         }
+        
         
         source_styles = {
             "model": {"width": 3, "dash": None},
@@ -288,15 +291,20 @@ class PDFVisualization:
         
         # 为不同类型的布局元素使用不同颜色
         colors = {
-            "title": (255, 0, 0),      # 红色
-            "text": (0, 255, 0),       # 绿色
-            "table": (0, 0, 255),      # 蓝色
-            "figure": (255, 255, 0),   # 黄色
-            "formula": (255, 0, 255),  # 紫色
-            "header": (0, 255, 255),   # 青色
-            "footer": (255, 128, 0),   # 橙色
-            "other": (128, 128, 128)   # 灰色
+            "plain text": (0, 200, 0),      # 绿色
+            "title": (255, 0, 0),           # 红色
+            "figure": (0, 0, 255),          # 蓝色
+            "table": (255, 165, 0),         # 橙色
+            "table_caption": (255, 135, 0), # 深橙色
+            "table_footnote": (255, 100, 0),# 红橙色
+            "isolate_formula": (128, 0, 128), # 紫色
+            "list": (0, 255, 255),          # 青色
+            "figure_caption": (0, 20, 45),  # 深蓝色
+            "abandon": (100, 100, 100),     # 灰色
+            "header": (255, 105, 180),      # 粉色
+            "footer": (100, 149, 237)       # 淡蓝色
         }
+        
         
         # 绘制每个布局元素
         for element in layout_results:

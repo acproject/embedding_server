@@ -70,19 +70,33 @@ class MultimodalEmbeddingService:
             self.image_model = self.image_model.to(self.device)
             self.image_model_name = image_model_name
             
+            # 初始化OCR模型
+            try:
+                logger.info("正在加载新的OCR模型...")
+                from app.services.ocr import OCRService
+                self.ocr_service = OCRService(models_dir="./models", device=self.device)
+                self.ocr_available = True
+                logger.info("新OCR模型加载成功")
+            except Exception as e:
+                logger.error(f"OCR模型加载失败: {e}")
+                self.ocr_available = False
+            
             # 初始化PDF服务
             # 只有当init_pdf_service为True时才初始化PDFService
             if init_pdf_service:
                 try:
                     from app.services.pdf import PDFService
                     self.pdf_service = PDFService(models_dir="./models", text_embedder=self)
+                    # 将OCR服务传递给PDF服务
+                    if hasattr(self, 'ocr_service') and self.ocr_available:
+                        self.pdf_service.set_ocr_service(self.ocr_service)
                 except Exception as e:
                     logger.error(f"PDF服务初始化失败: {e}")
                     self.pdf_service = None
-            else:
-                self.pdf_service = None
-            
-            logger.info("多模态嵌入服务初始化成功")
+                else:
+                    self.pdf_service = None
+                
+                logger.info("多模态嵌入服务初始化成功")
         except Exception as e:
             logger.error(f"多模态嵌入服务初始化失败: {e}")
             raise

@@ -1,13 +1,14 @@
 import os
 import logging
 import numpy as np
+from typing import List, Dict, Any, Tuple, Optional
 import torch
-from typing import List, Dict, Tuple
+from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
 class LayoutAnalyzer:
-    """处理PDF页面布局分析"""
+    """处理PDF布局分析"""
     
     def __init__(self, models_dir: str, device: str = "cpu"):
         """
@@ -19,384 +20,168 @@ class LayoutAnalyzer:
         """
         self.models_dir = models_dir
         self.device = device
-        self.layout_model = None
-        self.formula_extractor = None
+        self.model = None
+        self.model_input_size = (800, 1024)  # 默认模型输入尺寸
         
         try:
-            self._init_layout_models()
+            self._init_layout_model()
         except Exception as e:
             logger.error(f"布局分析模型初始化失败: {e}")
-            # 如果布局分析失败，将使用基本文本提取
-            self.layout_model = None
-            logger.warning("将使用基本文本提取模式")
+            raise
     
-    def _init_layout_models(self):
-        """初始化布局分析相关模型"""
+    def _init_layout_model(self):
+        """初始化布局分析模型"""
         try:
-            # 加载DocLayout-YOLO模型
-            doc_layout_path = os.path.join(self.models_dir, "layout/DocLayout-YOLO_ft/yolov10l_ft.pt")
-            if os.path.exists(doc_layout_path):
-                logger.info(f"加载DocLayout-YOLO模型: {doc_layout_path}")
-                from ultralytics import YOLO
-                self.doc_layout_model = YOLO(doc_layout_path)
-                self.doc_layout_model.to(self.device)
-            else:
-                logger.warning(f"DocLayout-YOLO模型不存在: {doc_layout_path}")
-                self.doc_layout_model = None
+            # 尝试导入YOLO
+            import ultralytics
+            from ultralytics import YOLO
             
-            # 使用YOLOv5作为主要布局分析工具
-            self.layout_model = self.doc_layout_model
-            if self.layout_model is None:
-                logger.warning("未找到布局分析模型，将使用基本文本提取")
-        except Exception as e:
-            logger.error(f"布局分析模型初始化失败: {e}")
-            # 如果布局分析失败，将使用基本文本提取
-            self.layout_model = None
-            logger.warning("将使用基本文本提取模式")
+            # 布局分析模型路径
+            layout_model_path = os.path.join(self.models_dir, "layout/DocLayout-YOLO_ft/yolov10l_ft.pt")
+            
+            # 检查模型文件是否存在
+            if not os.path.exists(layout_model_path):
+                logger.warning(f"布局模型文件不存在: {layout_model_path}")
+                # 尝试使用默认YOLO模型
+                self.model = YOLO("yolov8n.pt")
+                logger.info("使用默认YOLO模型")
+            else:
+                # 加载自定义布局模型
+                self.model = YOLO(layout_model_path)
+                logger.info(f"布局模型加载成功: {layout_model_path}")
+            
+            # 设置设备
+            self.model.to(self.device)
+            
+            # 获取模型输入尺寸
+            if hasattr(self.model, 'model') and hasattr(self.model.model, 'args'):
+                if hasattr(self.model.model.args, 'imgsz'):
+                    imgsz = self.model.model.args.imgsz
+                    if isinstance(imgsz, (list, tuple)) and len(imgsz) >= 2:
+                        self.model_input_size = (imgsz[1], imgsz[0])  # 宽度, 高度
+                    else:
+                        self.model_input_size = (imgsz, imgsz)  # 正方形
+            
+            logger.info(f"布局模型输入尺寸: {self.model_input_size}")
+            
+        except ImportError:
+            logger.error("未安装ultralytics，无法使用YOLO进行布局分析")
+            raise
     
-    def analyze_page(self, image: np.ndarray, target_size=None) -> List[Dict]:
+    def analyze_page(self, image: np.ndarray) -> List[Dict[str, Any]]:
         """
         分析页面布局
         
         Args:
-            image: 页面图像的numpy数组
-            target_size: 目标图像尺寸 (width, height)，用于坐标转换
-                
+            image: 页面图像，numpy数组格式
+            
         Returns:
-            List[Dict]: 布局元素列表，每个元素包含类型、坐标等信息
+            List[Dict]: 布局元素列表，每个元素包含类型、坐标和置信度
         """
-        if self.layout_model is None:
-            logger.warning("布局分析模型未加载，返回空布局")
+        if self.model is None:
+            logger.error("布局分析模型未初始化")
             return []
         
         try:
-            # 使用布局分析模型分析页面结构
-            results = self.layout_model(image)
-            layout = []
+            # 确保图像是RGB格式
+            if len(image.shape) == 2:
+                # 灰度图转RGB
+                image = np.stack([image] * 3, axis=2)
+            elif image.shape[2] == 4:
+                # RGBA转RGB
+                image = image[:, :, :3]
             
-            # 获取当前图像尺寸
-            img_h, img_w = image.shape[:2]
+            # 使用YOLO模型进行预测
+            results = self.model(image, verbose=False)
             
-            # 计算坐标转换比例（如果需要）
-            scale_x, scale_y = 1.0, 1.0
-            if target_size is not None:
-                target_w, target_h = target_size
-                scale_x = target_w / img_w
-                scale_y = target_h / img_h
-                logger.info(f"应用坐标转换: 从 {img_w}x{img_h} 到 {target_w}x{target_h}, 比例: {scale_x:.2f}x{scale_y:.2f}")
+            # 解析结果
+            layout_elements = []
             
             for result in results:
-                for box in result.boxes:
-                    # 获取坐标
-                    coords = box.xyxy[0].tolist()
+                boxes = result.boxes
+                for i in range(len(boxes)):
+                    # 获取边界框坐标 (x1, y1, x2, y2)
+                    box = boxes.xyxy[i].cpu().numpy()
+                    x1, y1, x2, y2 = box
                     
-                    # 应用坐标转换
-                    x0 = int(coords[0] * scale_x)
-                    y0 = int(coords[1] * scale_y)
-                    x1 = int(coords[2] * scale_x)
-                    y1 = int(coords[3] * scale_y)
+                    # 获取类别和置信度
+                    cls_id = int(boxes.cls[i].item())
+                    conf = float(boxes.conf[i].item())
                     
-                    layout.append({
-                        "type": result.names[int(box.cls)],
-                        "coordinates": [x0, y0, x1, y1],
-                        "confidence": float(box.conf)
+                    # 获取类别名称
+                    cls_name = result.names[cls_id]
+                    
+                    # 添加到布局元素列表
+                    layout_elements.append({
+                        "type": cls_name,
+                        "coordinates": [int(x1), int(y1), int(x2), int(y2)],
+                        "confidence": conf
                     })
             
-            # 检测公式
-            formula_blocks = self._detect_formulas(image)
+            return layout_elements
             
-            # 对公式块也应用相同的坐标转换
-            if target_size is not None:
-                for block in formula_blocks:
-                    coords = block["coordinates"]
-                    block["coordinates"] = [
-                        int(coords[0] * scale_x),
-                        int(coords[1] * scale_y),
-                        int(coords[2] * scale_x),
-                        int(coords[3] * scale_y)
-                    ]
-            
-            # 合并布局元素和公式元素
-            all_blocks = layout + formula_blocks
-            
-            # 按照从上到下的顺序排序布局元素
-            sorted_blocks = sorted(all_blocks, key=lambda x: x["coordinates"][1])
-            
-            return sorted_blocks
         except Exception as e:
-            logger.error(f"页面布局分析失败: {e}")
+            logger.error(f"布局分析失败: {e}")
             return []
-        finally:
-            # 清理GPU内存
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
     
-    def _detect_formulas(self, image: np.ndarray) -> List[Dict]:
-        """
-        检测图像中的公式
-        
-        Args:
-            image: 输入图像的numpy数组
-            
-        Returns:
-            List[Dict]: 检测到的公式列表
-        """
-        # 如果有公式提取器实例，则使用它
-        if self.formula_extractor is not None:
-            return self.formula_extractor.detect_formulas(image)
-        return []
-    
-    def _merge_blocks(self, layout_blocks, formula_blocks) -> List[Dict]:
-        """
-        合并布局元素和公式元素，处理重叠情况
-        
-        Args:
-            layout_blocks: 布局分析得到的元素列表
-            formula_blocks: 公式检测得到的元素列表
-            
-        Returns:
-            List[Dict]: 合并后的布局元素列表
-        """
-        merged_blocks = []
-        
-        # 转换layoutparser的Block对象为字典
-        for block in layout_blocks:
-            merged_blocks.append({
-                "type": block.type,
-                "coordinates": (int(block.coordinates[0]), int(block.coordinates[1]), 
-                               int(block.coordinates[2]), int(block.coordinates[3])),
-                "confidence": float(block.score) if hasattr(block, 'score') else 1.0
-            })
-        
-        # 添加公式块，处理与其他元素的重叠
-        for formula in formula_blocks:
-            # 检查是否与现有块重叠
-            overlapped = False
-            for i, block in enumerate(merged_blocks):
-                if self._is_overlapping(formula["coordinates"], block["coordinates"]):
-                    # 如果重叠且公式置信度更高，替换原块
-                    if formula["confidence"] > block["confidence"]:
-                        merged_blocks[i] = formula
-                    overlapped = True
-                    break
-            
-            # 如果没有重叠，直接添加公式块
-            if not overlapped:
-                merged_blocks.append(formula)
-        
-        return merged_blocks
-    
-    def _is_overlapping(self, box1: Tuple[int, int, int, int], box2: Tuple[int, int, int, int]) -> bool:
-        """
-        检查两个边界框是否重叠
-        
-        Args:
-            box1: 第一个边界框 (x1, y1, x2, y2)
-            box2: 第二个边界框 (x1, y1, x2, y2)
-            
-        Returns:
-            bool: 如果重叠则返回True，否则返回False
-        """
-        # 计算交集区域
-        x1 = max(box1[0], box2[0])
-        y1 = max(box1[1], box2[1])
-        x2 = min(box1[2], box2[2])
-        y2 = min(box1[3], box2[3])
-        
-        # 如果交集区域有效（宽度和高度都大于0），则存在重叠
-        if x2 > x1 and y2 > y1:
-            # 计算交集面积
-            intersection_area = (x2 - x1) * (y2 - y1)
-            
-            # 计算两个框的面积
-            box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
-            box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
-            
-            # 计算交并比 (IoU)
-            iou = intersection_area / float(box1_area + box2_area - intersection_area)
-            
-            # 如果IoU大于阈值，则认为重叠
-            return iou > 0.3
-        
-        return False
-    
-    def set_formula_extractor(self, formula_extractor):
-        """
-        设置公式提取器实例
-        
-        Args:
-            formula_extractor: 公式提取器实例
-        """
-        self.formula_extractor = formula_extractor
-    
-    def analyze_layout_structure(self, blocks: List[Dict]) -> Dict:
-        """
-        分析布局结构，识别标题、段落、列表等
-        
-        Args:
-            blocks: 布局元素列表
-            
-        Returns:
-            Dict: 结构化的布局信息
-        """
-        structure = {
-            "title": None,
-            "sections": [],
-            "current_section": {"heading": None, "content": []}
-        }
-        
-        # 按照从上到下的顺序处理块
-        for block in blocks:
-            block_type = block.get("type", "").lower()
-            
-            # 处理标题
-            if block_type in ["title", "heading"]:
-                # 如果是文档的第一个标题，设置为文档标题
-                if structure["title"] is None:
-                    structure["title"] = block
-                else:
-                    # 如果当前部分有内容，保存它并开始新部分
-                    if structure["current_section"]["content"]:
-                        structure["sections"].append(structure["current_section"])
-                    
-                    # 创建新部分
-                    structure["current_section"] = {
-                        "heading": block,
-                        "content": []
-                    }
-            # 处理其他内容
-            else:
-                structure["current_section"]["content"].append(block)
-        
-        # 添加最后一个部分
-        if structure["current_section"]["content"]:
-            structure["sections"].append(structure["current_section"])
-        
-        return structure
-    
-    def detect_reading_order(self, blocks: List[Dict]) -> List[Dict]:
-        """
-        检测块的阅读顺序
-        
-        Args:
-            blocks: 布局元素列表
-            
-        Returns:
-            List[Dict]: 按阅读顺序排序的布局元素列表
-        """
-        # 首先按照从上到下的顺序排序
-        vertical_sorted = sorted(blocks, key=lambda x: x["coordinates"][1])
-        
-        # 识别多列布局
-        columns = self._detect_columns(vertical_sorted)
-        
-        # 如果检测到多列，按列处理
-        if len(columns) > 1:
-            ordered_blocks = []
-            for column in columns:
-                # 对每列中的块按从上到下排序
-                column_blocks = sorted(column, key=lambda x: x["coordinates"][1])
-                ordered_blocks.extend(column_blocks)
-            return ordered_blocks
-        
-        # 单列情况，直接返回垂直排序的结果
-        return vertical_sorted
-    
-    def _detect_columns(self, blocks: List[Dict]) -> List[List[Dict]]:
-        """
-        检测文档中的列
-        
-        Args:
-            blocks: 布局元素列表
-            
-        Returns:
-            List[List[Dict]]: 按列分组的布局元素列表
-        """
-        if not blocks:
-            return [[]]
-        
-        # 计算页面宽度
-        page_width = max([block["coordinates"][2] for block in blocks])
-        
-        # 初始化列
-        columns = []
-        current_column = []
-        
-        # 计算每个块的中心x坐标
-        for block in blocks:
-            x1, _, x2, _ = block["coordinates"]
-            center_x = (x1 + x2) / 2
-            
-            # 检查是否属于现有列
-            column_found = False
-            for i, column in enumerate(columns):
-                if column:
-                    # 计算列的平均中心x坐标
-                    column_center = sum([(b["coordinates"][0] + b["coordinates"][2]) / 2 for b in column]) / len(column)
-                    # 如果块的中心接近列的中心，将其添加到该列
-                    if abs(center_x - column_center) < page_width * 0.2:  # 20%的页面宽度作为阈值
-                        columns[i].append(block)
-                        column_found = True
-                        break
-            
-            # 如果不属于任何现有列，创建新列
-            if not column_found:
-                columns.append([block])
-        
-        # 按照从左到右的顺序排序列
-        columns.sort(key=lambda col: sum([(b["coordinates"][0] + b["coordinates"][2]) / 2 for b in col]) / len(col) if col else 0)
-        
-        return columns
-    
-    def visualize_layout(self, image: np.ndarray, blocks: List[Dict]) -> np.ndarray:
+    def visualize_layout(self, image: np.ndarray, layout_elements: List[Dict[str, Any]]) -> Image.Image:
         """
         可视化布局分析结果
         
         Args:
-            image: 输入图像的numpy数组
-            blocks: 布局元素列表
+            image: 页面图像，numpy数组格式
+            layout_elements: 布局元素列表
             
         Returns:
-            np.ndarray: 可视化后的图像
+            Image.Image: 带有布局标注的图像
         """
+        # 转换为PIL图像
+        if isinstance(image, np.ndarray):
+            img = Image.fromarray(image.astype('uint8'))
+        else:
+            img = image
+        
+        draw = ImageDraw.Draw(img)
+        
+        # 为不同类型的元素使用不同颜色
+        colors = {
+            "plain text": (0, 200, 0),      # 绿色
+            "title": (255, 0, 0),           # 红色
+            "figure": (0, 0, 255),          # 蓝色
+            "table": (255, 165, 0),         # 橙色
+            "table_caption": (255, 135, 0), # 深橙色
+            "table_footnote": (255, 100, 0),# 红橙色
+            "isolate_formula": (128, 0, 128), # 紫色
+            "list": (0, 255, 255),          # 青色
+            "figure_caption": (0, 20, 45),  # 深蓝色
+            "abandon": (100, 100, 100),     # 灰色
+            "header": (255, 105, 180),      # 粉色
+            "footer": (100, 149, 237)       # 淡蓝色
+        }
+        
+        # 尝试加载字体
         try:
-            import cv2
+            font = ImageFont.truetype("Arial.ttf", 20)
+        except:
+            font = ImageFont.load_default()
+        
+        # 绘制每个布局元素
+        for i, element in enumerate(layout_elements):
+            element_type = element["type"].lower()
+            coords = element["coordinates"]
+            confidence = element.get("confidence", 0)
             
-            # 创建图像副本
-            viz_img = image.copy()
+            # 获取颜色
+            color = colors.get(element_type, (200, 200, 200))
             
-            # 为不同类型的块定义颜色
-            colors = {
-                "text": (0, 255, 0),      # 绿色
-                "title": (255, 0, 0),     # 红色
-                "heading": (255, 0, 0),   # 红色
-                "figure": (0, 255, 255),  # 黄色
-                "table": (0, 0, 255),     # 蓝色
-                "formula": (255, 0, 255), # 紫色
-                "list": (255, 128, 0),    # 橙色
-                "header": (128, 128, 0),  # 暗黄色
-                "footer": (0, 128, 128),  # 青色
-            }
+            # 绘制边界框
+            draw.rectangle(coords, outline=color, width=2)
             
-            # 绘制每个块
-            for block in blocks:
-                block_type = block.get("type", "").lower()
-                x1, y1, x2, y2 = block["coordinates"]
-                
-                # 获取块的颜色，如果类型未定义则使用灰色
-                color = colors.get(block_type, (128, 128, 128))
-                
-                # 绘制矩形
-                cv2.rectangle(viz_img, (x1, y1), (x2, y2), color, 2)
-                
-                # 添加标签
-                label = f"{block_type} ({block.get('confidence', 0):.2f})"
-                cv2.putText(viz_img, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-                
-            return viz_img
-        except Exception as e:
-            logger.error(f"布局可视化失败: {e}")
-            return image
+            # 添加标签
+            label = f"{i+1}.{element_type} ({confidence:.2f})"
+            draw.text((coords[0], coords[1]-20), label, fill=color, font=font)
+        
+        return img
 
 
 def analyze_page_with_prior(self, image: np.ndarray, page=None, pdf_structure=None, dpi=200) -> List[Dict]:
