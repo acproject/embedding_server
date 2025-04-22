@@ -23,6 +23,8 @@ class FormulaExtractor:
         self.device = device
         self.formula_model = None
         self.formula_available = False
+        self.pix2text_model = None
+        self.pix2tex_model = None
         
         try:
             # 尝试初始化公式识别模型
@@ -339,3 +341,127 @@ class FormulaExtractor:
                 "detection": {"count": 0, "boxes": []},
                 "recognition": {"formulas": []}
             }
+    
+    def __init__(self, models_dir: str, device: str = "cpu"):
+        """
+        初始化公式提取器
+        
+        Args:
+            models_dir: 模型目录
+            device: 计算设备 ("cpu" 或 "cuda")
+        """
+        self.models_dir = models_dir
+        self.device = device
+        self.pix2text_model = None
+        
+        try:
+            # 初始化pix2text模型
+            from pix2text import Pix2Text
+            self.pix2text_model = Pix2Text(
+                device=device,
+                model_dir=os.path.join(models_dir, "pix2text")
+            )
+            logger.info("公式提取器初始化成功")
+        except Exception as e:
+            logger.error(f"公式提取器初始化失败: {e}")
+            logger.warning("将使用备用方法进行公式识别")
+    
+    def recognize_formula(self, image: Union[np.ndarray, Image.Image]) -> str:
+        """
+        识别图像中的数学公式
+        
+        Args:
+            image: 包含公式的图像（numpy数组或PIL图像）
+            
+        Returns:
+            str: 识别出的LaTeX公式或base64编码的图像
+        """
+        try:
+            # 确保图像是PIL格式
+            if isinstance(image, np.ndarray):
+                image_pil = Image.fromarray(image)
+            else:
+                image_pil = image
+            
+            # 使用pix2text进行公式识别
+            if self.pix2text_model:
+                # 使用pix2text识别公式
+                result = self.pix2text_model.recognize(
+                    image_pil,
+                    out_type='latex',
+                    return_text=True
+                )
+                
+                if result and isinstance(result, str):
+                    # 清理LaTeX公式
+                    latex = self._clean_latex(result)
+                    if latex:
+                        return latex
+            
+            # 如果pix2text识别失败或未初始化，尝试使用备用方法
+            return self._fallback_recognition(image_pil)
+            
+        except Exception as e:
+            logger.error(f"公式识别失败: {e}")
+            # 返回图像的base64编码
+            return self._image_to_base64(image_pil)
+    
+    def _clean_latex(self, latex: str) -> str:
+        """
+        清理LaTeX公式
+        
+        Args:
+            latex: 原始LaTeX公式
+            
+        Returns:
+            str: 清理后的LaTeX公式
+        """
+        # 移除多余的空格和换行
+        latex = latex.strip()
+        
+        # 移除多余的美元符号
+        if latex.startswith("$") and latex.endswith("$"):
+            latex = latex[1:-1]
+        
+        # 移除多余的换行符
+        latex = latex.replace("\n", " ")
+        
+        # 检查公式是否为空
+        if not latex or latex.isspace():
+            return ""
+        
+        return latex
+    
+    def _fallback_recognition(self, image: Image.Image) -> str:
+        """
+        备用公式识别方法
+        
+        Args:
+            image: 包含公式的PIL图像
+            
+        Returns:
+            str: 识别出的LaTeX公式或base64编码的图像
+        """
+        try:
+            # 这里可以添加其他公式识别方法
+            # 例如使用OCR或其他模型
+            
+            # 如果没有其他方法，返回图像的base64编码
+            return self._image_to_base64(image)
+        except Exception as e:
+            logger.error(f"备用公式识别失败: {e}")
+            return self._image_to_base64(image)
+    
+    def _image_to_base64(self, image: Image.Image) -> str:
+        """
+        将PIL图像转换为base64编码
+        
+        Args:
+            image: PIL图像
+            
+        Returns:
+            str: base64编码的图像
+        """
+        buffered = io.BytesIO()
+        image.save(buffered, format="PNG")
+        return base64.b64encode(buffered.getvalue()).decode()

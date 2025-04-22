@@ -1,26 +1,37 @@
 fastapi==0.104.1
 uvicorn
 PyMuPDF==1.25.5
-sentence-transformers==2.2.2
-pydantic==2.4.2
+sentence-transformers==4.1.0
+pydantic>=2.7.0
 torch>=2.0.0
-transformers>=4.30.0
-huggingface-hub==0.16.4
+# Specify the exact version of transformers to avoid lengthy dependency resolution
+transformers>=4.41.0,<5.0
+# Update huggingface-hub to be compatible with transformers 4.37.0
+huggingface-hub>=0.24.5,<1.0
 psycopg2-binary==2.9.9
 python-dotenv==1.0.0
 loguru==0.7.2
 gunicorn==21.2.0
 pdfplumber==0.11.6
 layoutparser==0.3.4
-paddleocr==2.10.0
+paddleocr==2.6.0
+# Specify exact version of albumentations to avoid lengthy dependency resolution
+albumentations<=1.4.11
 paddlepaddle==2.6.2
 open-clip-torch==2.32.0
-pillow>=11.0.0
+pillow>=10.4.0,<=11.1.0
 python-multipart==0.0.20
 opencv-python>=4.5.0
 
-numpy>=1.20.0
+# Pin NumPy to a 1.x version to avoid the np.sctypes removal in NumPy 2.0
+numpy>=1.20.0,<2.0.0
 scipy>=1.7.0
 matplotlib>=3.5.0
 pytesseract>=0.3.8
 ultralytics==8.3.112
+Jinja2==3.1.4
+tokenizers==0.19.1
+tqdm==4.66.4
+# 添加图像公式识别相关依赖
+pix2text==1.1.3
+litellm==1.65.0
