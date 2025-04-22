@@ -18,6 +18,7 @@ from app.services.pdf import PDFService
 # 导入路由器
 from app.routers import pdf_services
 from app.routers import file  # 添加导入file路由器
+from app.routers import embedding  # 添加导入embedding路由器
 
 # 加载环境变量
 load_dotenv()
@@ -41,6 +42,7 @@ app.add_middleware(
 # 注册路由器
 app.include_router(pdf_services.router, prefix="/api/pdf_services")
 app.include_router(file.router)  # 添加file路由器注册
+app.include_router(embedding.router)  # 添加embedding路由器注册
 
 # 初始化嵌入服务
 embedding_service = None
